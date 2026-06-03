@@ -78,7 +78,7 @@ async fn load_documents_from_dir(docs_dir: &Path) -> std::io::Result<HashMap<Str
     let mut entries = fs::read_dir(docs_dir).await?;
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
-        if !path.extension().is_some_and(|ext| ext == "md") {
+        if path.extension().is_none_or(|ext| ext != "md") {
             continue;
         }
 

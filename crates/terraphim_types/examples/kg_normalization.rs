@@ -95,8 +95,8 @@ impl KgNormalizer {
                     let path = entry.path();
                     if path.is_dir() {
                         visit_dir(&path, docs);
-                    } else if path.extension().is_some_and(|e| e == "md") {
-                        if let Ok(content) = fs::read_to_string(&path) {
+                    } else if path.extension().is_some_and(|e| e == "md")
+                        && let Ok(content) = fs::read_to_string(&path) {
                             let (title, tags, linked_terms) = parse_markdown_frontmatter(&content);
                             let doc = CorpusDocument {
                                 path: path.to_string_lossy().to_string(),
@@ -107,7 +107,6 @@ impl KgNormalizer {
                             };
                             docs.push(doc);
                         }
-                    }
                 }
             }
         }
@@ -272,8 +271,8 @@ fn parse_markdown_frontmatter(content: &str) -> (String, Vec<String>, Vec<String
     let mut tags = Vec::new();
     let mut linked_terms = Vec::new();
 
-    if let Some(stripped) = content.strip_prefix("---") {
-        if let Some(end) = stripped.find("---") {
+    if let Some(stripped) = content.strip_prefix("---")
+        && let Some(end) = stripped.find("---") {
             let frontmatter = &stripped[..end];
             for line in frontmatter.lines() {
                 let line = line.trim();
@@ -285,30 +284,27 @@ fn parse_markdown_frontmatter(content: &str) -> (String, Vec<String>, Vec<String
                         .to_string();
                 } else if line.starts_with("tags:") {
                     // Parse tags array
-                    if let Some(start) = line.find('[') {
-                        if let Some(end) = line.find(']') {
+                    if let Some(start) = line.find('[')
+                        && let Some(end) = line.find(']') {
                             let tags_str = &line[start + 1..end];
                             tags = tags_str
                                 .split(',')
                                 .map(|s| s.trim().trim_matches('"').to_string())
                                 .collect();
                         }
-                    }
                 } else if line.starts_with("linked_terms:") {
                     // Parse linked_terms array
-                    if let Some(start) = line.find('[') {
-                        if let Some(end) = line.find(']') {
+                    if let Some(start) = line.find('[')
+                        && let Some(end) = line.find(']') {
                             let terms_str = &line[start + 1..end];
                             linked_terms = terms_str
                                 .split(',')
                                 .map(|s| s.trim().trim_matches('"').to_string())
                                 .collect();
                         }
-                    }
                 }
             }
         }
-    }
 
     // If no title from frontmatter, try to get first header
     if title.is_empty() {
