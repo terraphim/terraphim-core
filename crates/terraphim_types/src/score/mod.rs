@@ -127,39 +127,45 @@ impl Scorer {
         match query.name_scorer {
             QueryScorer::BM25 => {
                 if let Some(scorer) = &self.scorer
-                    && let Some(bm25_scorer) = scorer.downcast_ref::<OkapiBM25Scorer>() {
-                        results.rescore(|document| bm25_scorer.score(&query.name, document));
-                    }
+                    && let Some(bm25_scorer) = scorer.downcast_ref::<OkapiBM25Scorer>()
+                {
+                    results.rescore(|document| bm25_scorer.score(&query.name, document));
+                }
             }
             QueryScorer::BM25F => {
                 if let Some(scorer) = &self.scorer
-                    && let Some(bm25f_scorer) = scorer.downcast_ref::<BM25FScorer>() {
-                        results.rescore(|document| bm25f_scorer.score(&query.name, document));
-                    }
+                    && let Some(bm25f_scorer) = scorer.downcast_ref::<BM25FScorer>()
+                {
+                    results.rescore(|document| bm25f_scorer.score(&query.name, document));
+                }
             }
             QueryScorer::BM25Plus => {
                 if let Some(scorer) = &self.scorer
-                    && let Some(bm25plus_scorer) = scorer.downcast_ref::<BM25PlusScorer>() {
-                        results.rescore(|document| bm25plus_scorer.score(&query.name, document));
-                    }
+                    && let Some(bm25plus_scorer) = scorer.downcast_ref::<BM25PlusScorer>()
+                {
+                    results.rescore(|document| bm25plus_scorer.score(&query.name, document));
+                }
             }
             QueryScorer::Tfidf => {
                 if let Some(scorer) = &self.scorer
-                    && let Some(tfidf_scorer) = scorer.downcast_ref::<TFIDFScorer>() {
-                        results.rescore(|document| tfidf_scorer.score(&query.name, document));
-                    }
+                    && let Some(tfidf_scorer) = scorer.downcast_ref::<TFIDFScorer>()
+                {
+                    results.rescore(|document| tfidf_scorer.score(&query.name, document));
+                }
             }
             QueryScorer::Jaccard => {
                 if let Some(scorer) = &self.scorer
-                    && let Some(jaccard_scorer) = scorer.downcast_ref::<JaccardScorer>() {
-                        results.rescore(|document| jaccard_scorer.score(&query.name, document));
-                    }
+                    && let Some(jaccard_scorer) = scorer.downcast_ref::<JaccardScorer>()
+                {
+                    results.rescore(|document| jaccard_scorer.score(&query.name, document));
+                }
             }
             QueryScorer::QueryRatio => {
                 if let Some(scorer) = &self.scorer
-                    && let Some(query_ratio_scorer) = scorer.downcast_ref::<QueryRatioScorer>() {
-                        results.rescore(|document| query_ratio_scorer.score(&query.name, document));
-                    }
+                    && let Some(query_ratio_scorer) = scorer.downcast_ref::<QueryRatioScorer>()
+                {
+                    results.rescore(|document| query_ratio_scorer.score(&query.name, document));
+                }
             }
             _ => {
                 log::debug!("Similarity {:?}", query.similarity);

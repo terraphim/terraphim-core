@@ -727,9 +727,10 @@ impl fmt::Display for Document {
 
         // Append summarization if it exists and is different from description
         if let Some(ref summarization) = self.summarization
-            && Some(summarization) != self.description.as_ref() {
-                write!(f, " {}", summarization)?;
-            }
+            && Some(summarization) != self.description.as_ref()
+        {
+            write!(f, " {}", summarization)?;
+        }
 
         Ok(())
     }
