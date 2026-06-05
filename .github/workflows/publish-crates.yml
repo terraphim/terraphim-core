@@ -26,6 +26,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: 1password/install-cli-action@v2
+      - name: Verify 1Password service account secret
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        run: |
+          if [ -z "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
+            echo "ERROR: OP_SERVICE_ACCOUNT_TOKEN secret is not configured." >&2
+            echo "Set it as a repository or organisation secret to enable crates.io publishing." >&2
+            exit 1
+          fi
       - name: Get crates.io token from 1Password
         id: token
         env:
@@ -46,7 +55,7 @@ jobs:
               echo "Missing manifest for $crate at $manifest" >&2
               exit 1
             fi
-            version=$(grep -m1 '^version' "$manifest" | sed 's/.*"\(.*\)".*//')
+            version=$(grep -m1 '^version' "$manifest" | sed 's/.*"\(.*\)".*/\1/')
             if curl -fsS "https://crates.io/api/v1/crates/$crate/$version" >/dev/null 2>&1; then
               echo "$crate $version already exists on crates.io; skipping"
               continue
