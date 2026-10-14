@@ -469,7 +469,7 @@ impl SharedLearning {
             id,
             title,
             content,
-            trust_level: TrustLevel::L0,
+            trust_level: TrustLevel::L1,
             quality: QualityMetrics::new(),
             source,
             source_agent,
@@ -535,7 +535,12 @@ impl SharedLearning {
     }
 
     /// Promote to L2 (peer-validated)
+    ///
+    /// If the current level is L0, it is promoted through L1 first.
     pub fn promote_to_l2(&mut self) {
+        if self.trust_level == TrustLevel::L0 {
+            self.promote_to_l1();
+        }
         if self.trust_level == TrustLevel::L1 {
             self.trust_level = TrustLevel::L2;
             self.promoted_at = Some(Utc::now());
@@ -771,7 +776,7 @@ mod tests {
 
         assert!(learning.id.starts_with("learning-"));
         assert_eq!(learning.title, "Test Learning");
-        assert_eq!(learning.trust_level, TrustLevel::L0);
+        assert_eq!(learning.trust_level, TrustLevel::L1);
         assert_eq!(learning.source_agent, "test-agent");
     }
 
@@ -784,14 +789,11 @@ mod tests {
             "agent".to_string(),
         );
 
-        assert_eq!(learning.trust_level, TrustLevel::L0);
-
-        learning.promote_to_l1();
         assert_eq!(learning.trust_level, TrustLevel::L1);
-        assert!(learning.promoted_at.is_some());
 
         learning.promote_to_l2();
         assert_eq!(learning.trust_level, TrustLevel::L2);
+        assert!(learning.promoted_at.is_some());
 
         learning.promote_to_l3();
         assert_eq!(learning.trust_level, TrustLevel::L3);
@@ -1085,14 +1087,14 @@ mod tests {
     }
 
     #[test]
-    fn test_new_defaults_to_l0() {
+    fn test_new_defaults_to_l1() {
         let learning = SharedLearning::new(
             "title".to_string(),
             "content".to_string(),
             LearningSource::BashHook,
             "agent".to_string(),
         );
-        assert_eq!(learning.trust_level, TrustLevel::L0);
+        assert_eq!(learning.trust_level, TrustLevel::L1);
     }
 
     #[test]
@@ -1103,6 +1105,8 @@ mod tests {
             LearningSource::BashHook,
             "agent".to_string(),
         );
+        // Manually set to L0 to test the L0→L1 promotion path
+        learning.trust_level = TrustLevel::L0;
         assert_eq!(learning.trust_level, TrustLevel::L0);
         assert!(learning.promoted_at.is_none());
 
@@ -1131,20 +1135,17 @@ mod tests {
     }
 
     #[test]
-    fn test_promote_to_l2_requires_l1() {
+    fn test_promote_to_l2_from_l1() {
         let mut learning = SharedLearning::new(
             "title".to_string(),
             "content".to_string(),
             LearningSource::Manual,
             "agent".to_string(),
         );
-        // At L0, promote_to_l2 is a no-op
-        learning.promote_to_l2();
-        assert_eq!(learning.trust_level, TrustLevel::L0);
-
-        // Must go through L1 first
-        learning.promote_to_l1();
+        // new() starts at L1; direct promotion to L2 works
+        assert_eq!(learning.trust_level, TrustLevel::L1);
         learning.promote_to_l2();
         assert_eq!(learning.trust_level, TrustLevel::L2);
+        assert!(learning.promoted_at.is_some());
     }
 }

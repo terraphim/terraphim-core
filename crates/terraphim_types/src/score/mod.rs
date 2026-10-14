@@ -282,8 +282,8 @@ impl Similarity {
             Similarity::Jaro => strsim::jaro(q1, q2),
             Similarity::JaroWinkler => strsim::jaro_winkler(q1, q2),
         };
-        if sim < f64::EPSILON {
-            f64::EPSILON
+        if sim < <f64>::EPSILON {
+            <f64>::EPSILON
         } else {
             sim
         }

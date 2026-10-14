@@ -246,7 +246,7 @@ This crate requires Rust 1.70 or later.
 
 ## License
 
-Licensed under Apache-2.0. See [LICENSE](../../LICENSE-Apache-2.0) for details.
+Licensed under Apache-2.0. See [LICENSE](LICENSE) for details.
 
 ## Related Crates
 

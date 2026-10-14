@@ -1,0 +1,26 @@
+[package]
+name = "terraphim_rolegraph_core"
+version = "0.1.1"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Dep-light core types from terraphim_rolegraph: TriggerIndex (TF-IDF) + SymbolicEmbedding (IS-A hierarchy Jaccard). No tokio, no reqwest, no terraphim_automata."
+documentation = "https://terraphim.ai"
+homepage = "https://terraphim.ai"
+keywords = ["kg", "embedding", "rolegraph", "jaccard", "trigger"]
+readme = "README.md"
+publish = ["crates-io"]
+
+[dependencies]
+# Light: same deps as terraphim_types. NO terraphim_automata (no tokio/reqwest).
+ahash = { version = "0.8", features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+terraphim_types = { path = "../terraphim_types", version = "1.22.3", default-features = false, features = ["kg-integration"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = "1.4"
+

@@ -92,18 +92,20 @@ fn test_short_word_filtering() {
     triggers.insert(1u64, "a b cd efg".to_string());
     index.build(triggers);
 
-    // Only "efg" (len > 2) should be indexed
-    // Query with "efg" should match
+    // Words of length < 2 (e.g. "a") are filtered out at both index and
+    // query time, so a query consisting solely of such tokens yields no
+    // matches.
+    let results_short = index.query("a");
+    assert!(
+        results_short.is_empty(),
+        "Words of length < 2 should be filtered from query tokens"
+    );
+
+    // "efg" (len 3) survives both filters and matches the only indexed
+    // trigger.
     let results = index.query("efg");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, 1u64);
-
-    // Query with short words only should not match
-    let results_short = index.query("cd");
-    assert!(
-        results_short.is_empty(),
-        "Short words (len <= 2) should be filtered"
-    );
 }
 
 #[test]

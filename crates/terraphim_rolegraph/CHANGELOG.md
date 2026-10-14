@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-05
+
+### Changed
+
+- Terraphim dependencies (`terraphim_automata`, `terraphim_types`, `terraphim_rolegraph_core`) are now resolved from the `terraphim` registry, matching how the crate is published; minimums raised to `terraphim_types` 1.22.2 and `terraphim_rolegraph_core` 0.1.1 (#84).
+
+- **Breaking:** now depends on `terraphim_automata` 2.0.0. `Error::TerraphimAutomataError` wraps `terraphim_automata::TerraphimAutomataError`, so the automata major version is part of this crate's public API; code that names or converts that error type must use `terraphim_automata` 2.x. No other source change.
+
 ## [1.0.0] - 2025-01-22
 
 ### Added

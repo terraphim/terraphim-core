@@ -345,7 +345,7 @@ fn bench_comparison_with_matcher(c: &mut Criterion) {
 
     // Benchmark existing matcher functionality
     group.bench_function("aho_corasick_matcher", |b| {
-        b.iter(|| terraphim_automata::find_matches(test_text, thesaurus.clone(), false).unwrap())
+        b.iter(|| terraphim_automata::find_matches(test_text, &thesaurus, false).unwrap())
     });
 
     group.finish();
@@ -359,7 +359,7 @@ fn bench_paragraph_extraction(c: &mut Criterion) {
     let text = "header\n\nalpha ipsum dolor sit amet,\nconsectetur adipiscing elit.\n\nfooter";
     c.bench_function("extract_paragraphs_from_automata_small_text", |b| {
         b.iter(|| {
-            let _ = extract_paragraphs_from_automata(text, thesaurus.clone(), true).unwrap();
+            let _ = extract_paragraphs_from_automata(text, &thesaurus, true).unwrap();
         })
     });
 }

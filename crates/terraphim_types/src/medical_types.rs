@@ -136,7 +136,9 @@ impl Display for MedicalNodeType {
 /// - Diagnostic relationships (Diagnoses, Confirms, etc.)
 /// - Clinical course relationships (ProgressesTo, ResolvesTo, etc.)
 /// - Treatment detail relationships (AdministeredVia, CombinedWith, etc.)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum MedicalEdgeType {
     // -- Core relationships --
@@ -371,6 +373,48 @@ impl Display for MedicalEdgeType {
             Self::Antagonizes => "antagonizes",
         };
         write!(f, "{}", s)
+    }
+}
+
+/// Canonical identity key for a directed medical edge.
+///
+/// Edge identity includes the ordered source and destination node IDs and the
+/// relation kind. Direction is significant: `(a -> b, Treats)` and
+/// `(b -> a, Treats)` are distinct edges, and two edges sharing endpoints but
+/// differing in [`MedicalEdgeType`] are distinct edges. All derived traits
+/// (`Eq`, `Hash`, `Ord`) and the serde representation agree on this identity,
+/// and the serde mapping is canonical (field order is fixed), so sorting by
+/// key yields byte-stable serialised output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct MedicalEdgeKey {
+    /// Source (tail) node ID.
+    pub source: u64,
+    /// Destination (head) node ID.
+    pub target: u64,
+    /// Relation kind.
+    pub edge_type: MedicalEdgeType,
+}
+
+impl MedicalEdgeKey {
+    /// Create a new directed edge key.
+    pub fn new(source: u64, target: u64, edge_type: MedicalEdgeType) -> Self {
+        Self {
+            source,
+            target,
+            edge_type,
+        }
+    }
+
+    /// Return the key for the reverse direction of the same relation.
+    ///
+    /// The reverse key is a distinct identity unless callers explicitly choose
+    /// to treat the relation as symmetric; no automatic collapsing occurs.
+    pub fn reversed(&self) -> Self {
+        Self {
+            source: self.target,
+            target: self.source,
+            edge_type: self.edge_type,
+        }
     }
 }
 

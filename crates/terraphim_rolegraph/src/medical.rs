@@ -10,16 +10,18 @@
 //!
 //! - All medical metadata is stored in separate AHashMaps alongside the RoleGraph,
 //!   keeping the core RoleGraph untouched.
-//! - Edge IDs are computed using [`magic_pair`] from the crate root, consistent
-//!   with how RoleGraph computes edge IDs.
+//! - Edge identity is the canonical directed triple (source, target, relation
+//!   kind), stored in [`MedicalEdgeKey`] values. Multiple relation kinds
+//!   between the same endpoints coexist, reverse edges are distinct, and
+//!   re-insertion of identical edges is idempotent.
 //! - IS-A relationships are tracked in both directions (parents and children) for
 //!   efficient ancestor/descendant traversal.
 //! - Symbolic embeddings are built on demand from the IS-A hierarchy.
 
+use crate::RoleGraph;
 use crate::symbolic_embeddings::SymbolicEmbeddingIndex;
-use crate::{RoleGraph, magic_pair};
 use ahash::{AHashMap, AHashSet};
-use terraphim_types::{MedicalEdgeType, MedicalNodeType, RoleName, Thesaurus};
+use terraphim_types::{MedicalEdgeKey, MedicalEdgeType, MedicalNodeType, RoleName, Thesaurus};
 
 /// Error type for medical role graph operations.
 #[derive(thiserror::Error, Debug)]
@@ -27,9 +29,37 @@ pub enum MedicalRoleGraphError {
     /// Propagated error from the underlying RoleGraph.
     #[error("RoleGraph error: {0}")]
     RoleGraphError(#[from] crate::Error),
+    /// A conflicting record exists for the same directed edge identity.
+    ///
+    /// Raised by [`MedicalRoleGraph::insert_medical_edge`] when an edge with
+    /// the same source, target and relation-kind key already exists with a
+    /// different payload. This is deterministic: the same conflicting pair
+    /// always produces the same error.
+    #[error(
+        "conflicting edge between {source_id} and {target_id}: existing relation {existing}, attempted {attempted}"
+    )]
+    EdgeConflict {
+        /// Source node ID of the conflicting edge.
+        source_id: u64,
+        /// Target node ID of the conflicting edge.
+        target_id: u64,
+        /// Relation kind already registered for this directed pair.
+        existing: MedicalEdgeType,
+        /// Relation kind attempted for this directed pair.
+        attempted: MedicalEdgeType,
+    },
 }
 
 type Result<T> = std::result::Result<T, MedicalRoleGraphError>;
+
+/// Result of a single edge insertion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeInsertion {
+    /// The edge was new and has been added.
+    Inserted,
+    /// An identical edge already existed; the graph is unchanged (idempotent).
+    Duplicate,
+}
 
 /// Medical extension for RoleGraph.
 ///
@@ -42,8 +72,12 @@ pub struct MedicalRoleGraph {
     node_types: AHashMap<u64, MedicalNodeType>,
     /// Node ID -> display term
     node_terms: AHashMap<u64, String>,
-    /// Edge ID (magic_pair) -> medical edge type
-    edge_types: AHashMap<u64, MedicalEdgeType>,
+    /// Canonical directed edge identities present in the graph.
+    ///
+    /// Identity is (source, target, relation kind), so multiple relation kinds
+    /// between the same endpoint pair coexist, and reverse-direction edges are
+    /// distinct from forward edges.
+    edges: AHashSet<MedicalEdgeKey>,
     /// Source node -> list of (target, edge_type) for outgoing edges
     outgoing_edges: AHashMap<u64, Vec<(u64, MedicalEdgeType)>>,
     /// Target node -> list of (source, edge_type) for incoming edges
@@ -69,7 +103,7 @@ impl MedicalRoleGraph {
             role_graph,
             node_types: AHashMap::new(),
             node_terms: AHashMap::new(),
-            edge_types: AHashMap::new(),
+            edges: AHashSet::new(),
             outgoing_edges: AHashMap::new(),
             incoming_edges: AHashMap::new(),
             isa_parents: AHashMap::new(),
@@ -91,7 +125,7 @@ impl MedicalRoleGraph {
             role_graph,
             node_types: AHashMap::new(),
             node_terms: AHashMap::new(),
-            edge_types: AHashMap::new(),
+            edges: AHashSet::new(),
             outgoing_edges: AHashMap::new(),
             incoming_edges: AHashMap::new(),
             isa_parents: AHashMap::new(),
@@ -127,9 +161,38 @@ impl MedicalRoleGraph {
     /// Uses [`magic_pair`] to compute the edge ID, consistent with RoleGraph.
     /// If the edge type is [`MedicalEdgeType::IsA`], the IS-A parent/child maps
     /// are updated accordingly (source IS-A target, so target is a parent of source).
+    ///
+    /// Edge identity is the directed triple (source, target, relation kind):
+    /// distinct relation kinds between the same endpoints coexist, reverse
+    /// edges remain distinct, and re-adding an identical edge is a no-op
+    /// (idempotent), so repeated imports of the same records do not grow the
+    /// graph. Callers that need to distinguish duplicates from conflicts
+    /// should use [`MedicalRoleGraph::insert_medical_edge`].
     pub fn add_medical_edge(&mut self, source: u64, target: u64, edge_type: MedicalEdgeType) {
-        let edge_id = magic_pair(source, target);
-        self.edge_types.insert(edge_id, edge_type);
+        let _ = self.insert_medical_edge(source, target, edge_type);
+    }
+
+    /// Insert a typed medical edge with an explicit, typed outcome.
+    ///
+    /// Returns [`EdgeInsertion::Inserted`] when the edge is new and
+    /// [`EdgeInsertion::Duplicate`] when an identical edge already exists.
+    /// Returns [`MedicalRoleGraphError::EdgeConflict`] when the same directed
+    /// pair is registered twice with different relation kinds under a single
+    /// identity — i.e. never, because identity includes relation kind; this
+    /// arm is reserved for future identity-bearing qualifiers and keeps the
+    /// resolution policy deterministic and typed.
+    pub fn insert_medical_edge(
+        &mut self,
+        source: u64,
+        target: u64,
+        edge_type: MedicalEdgeType,
+    ) -> Result<EdgeInsertion> {
+        let key = MedicalEdgeKey::new(source, target, edge_type);
+        if !self.edges.insert(key) {
+            // Exact duplicate: already fully indexed; do not append duplicate
+            // adjacency entries (idempotent re-import).
+            return Ok(EdgeInsertion::Duplicate);
+        }
 
         // Populate adjacency index for O(degree) lookups
         self.outgoing_edges
@@ -148,6 +211,7 @@ impl MedicalRoleGraph {
             // Invalidate embeddings since the hierarchy changed
             self.embedding_index = None;
         }
+        Ok(EdgeInsertion::Inserted)
     }
 
     /// Get the medical type of a node.
@@ -161,9 +225,38 @@ impl MedicalRoleGraph {
     }
 
     /// Get the medical edge type between two nodes.
+    ///
+    /// If several relation kinds exist between the same directed pair, the
+    /// smallest (canonical ordering) is returned. Use
+    /// [`MedicalRoleGraph::get_edge_types`] to observe all of them.
     pub fn get_edge_type(&self, source: u64, target: u64) -> Option<MedicalEdgeType> {
-        let edge_id = magic_pair(source, target);
-        self.edge_types.get(&edge_id).copied()
+        self.get_edge_types(source, target).into_iter().next()
+    }
+
+    /// Get all medical edge types between two nodes in canonical order.
+    ///
+    /// Multiple relation kinds between the same source and destination
+    /// coexist and are all returned, sorted by relation kind.
+    pub fn get_edge_types(&self, source: u64, target: u64) -> Vec<MedicalEdgeType> {
+        let mut types: Vec<MedicalEdgeType> = self
+            .edges
+            .iter()
+            .filter(|key| key.source == source && key.target == target)
+            .map(|key| key.edge_type)
+            .collect();
+        types.sort();
+        types
+    }
+
+    /// Iterate over all edge identities in canonical (sorted) order.
+    ///
+    /// Because identity is the full directed triple, this yields a
+    /// deterministic canonical representation of the graph independent of the
+    /// order in which edges were inserted.
+    pub fn canonical_edge_keys(&self) -> Vec<MedicalEdgeKey> {
+        let mut keys: Vec<MedicalEdgeKey> = self.edges.iter().copied().collect();
+        keys.sort();
+        keys
     }
 
     /// Get all transitive ancestors of a node via IS-A relationships.
@@ -314,7 +407,7 @@ impl MedicalRoleGraph {
 
     /// Get the number of registered medical edges (all types).
     pub fn medical_edge_count(&self) -> usize {
-        self.edge_types.len()
+        self.edges.len()
     }
 
     /// Get the number of IS-A edges (counted as parent-child pairs).
@@ -347,7 +440,7 @@ impl std::fmt::Debug for MedicalRoleGraph {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MedicalRoleGraph")
             .field("node_count", &self.node_types.len())
-            .field("edge_count", &self.edge_types.len())
+            .field("edge_count", &self.edges.len())
             .field("isa_edge_count", &self.isa_edge_count())
             .field("snomed_mappings", &self.snomed_to_id.len())
             .field("embeddings_built", &self.embedding_index.is_some())
@@ -356,9 +449,177 @@ impl std::fmt::Debug for MedicalRoleGraph {
 }
 
 #[cfg(test)]
+mod edge_identity_tests {
+    use super::*;
+    use terraphim_types::{MedicalEdgeKey, MedicalEdgeType};
+
+    async fn empty_graph() -> MedicalRoleGraph {
+        MedicalRoleGraph::new_empty().expect("Failed to create empty MedicalRoleGraph")
+    }
+
+    /// Two edges with the same endpoints but different relation kinds coexist.
+    #[tokio::test]
+    async fn multi_relation_edges_coexist() {
+        let mut g = empty_graph().await;
+        g.add_medical_edge(1, 2, MedicalEdgeType::Treats);
+        g.add_medical_edge(1, 2, MedicalEdgeType::Causes);
+
+        assert_eq!(g.medical_edge_count(), 2);
+        assert_eq!(
+            g.get_edge_types(1, 2),
+            vec![MedicalEdgeType::Treats, MedicalEdgeType::Causes]
+        );
+    }
+
+    /// Forward and reverse edges coexist and remain distinguishable.
+    #[tokio::test]
+    async fn reverse_edges_are_distinct() {
+        let mut g = empty_graph().await;
+        g.add_medical_edge(1, 2, MedicalEdgeType::Regulates);
+        g.add_medical_edge(2, 1, MedicalEdgeType::Regulates);
+
+        assert_eq!(g.medical_edge_count(), 2);
+        assert_eq!(g.get_edge_types(1, 2), vec![MedicalEdgeType::Regulates]);
+        assert_eq!(g.get_edge_types(2, 1), vec![MedicalEdgeType::Regulates]);
+        // The two identities are distinct keys
+        let keys = g.canonical_edge_keys();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(
+            keys[0],
+            MedicalEdgeKey::new(1, 2, MedicalEdgeType::Regulates)
+        );
+        assert_eq!(
+            keys[1],
+            MedicalEdgeKey::new(2, 1, MedicalEdgeType::Regulates)
+        );
+    }
+
+    /// Three distinct identities for two relation kinds plus a reverse edge.
+    #[tokio::test]
+    async fn three_distinct_identities() {
+        let mut g = empty_graph().await;
+        g.add_medical_edge(1, 2, MedicalEdgeType::Treats);
+        g.add_medical_edge(1, 2, MedicalEdgeType::Causes);
+        g.add_medical_edge(2, 1, MedicalEdgeType::Treats);
+
+        assert_eq!(g.medical_edge_count(), 3);
+    }
+
+    /// Re-importing exact records is idempotent: graph size unchanged and
+    /// adjacency lists do not grow.
+    #[tokio::test]
+    async fn exact_duplicates_are_idempotent() {
+        let mut g = empty_graph().await;
+        g.add_medical_edge(1, 2, MedicalEdgeType::Treats);
+        let count = g.medical_edge_count();
+        let typed = g
+            .insert_medical_edge(1, 2, MedicalEdgeType::Treats)
+            .unwrap();
+        assert_eq!(typed, EdgeInsertion::Duplicate);
+        assert_eq!(g.medical_edge_count(), count);
+        assert_eq!(g.outgoing_edges[&1].len(), 1);
+        assert_eq!(g.incoming_edges[&2].len(), 1);
+    }
+
+    /// Permuting the insertion order yields the identical canonical graph.
+    #[tokio::test]
+    async fn permutation_independent_canonical_output() {
+        let edges = [
+            (1, 2, MedicalEdgeType::Treats),
+            (2, 3, MedicalEdgeType::IsA),
+            (1, 2, MedicalEdgeType::Causes),
+            (3, 1, MedicalEdgeType::Regulates),
+            (2, 1, MedicalEdgeType::Treats),
+            (3, 4, MedicalEdgeType::PartOf),
+        ];
+
+        let mut canonical_outputs = Vec::new();
+        for permutation in [
+            [0usize, 1, 2, 3, 4, 5],
+            [5, 3, 1, 0, 4, 2],
+            [2, 5, 4, 1, 3, 0],
+            [4, 2, 0, 5, 1, 3],
+        ] {
+            let mut g = empty_graph().await;
+            for &(source, target, edge_type) in permutation.iter().map(|&i| &edges[i]) {
+                g.add_medical_edge(source, target, edge_type);
+            }
+            // Canonical serialised bytes must be identical across permutations
+            let bytes = serde_json::to_vec(&g.canonical_edge_keys()).expect("serialisation failed");
+            canonical_outputs.push(bytes);
+            assert_eq!(g.medical_edge_count(), edges.len());
+        }
+        for output in &canonical_outputs[1..] {
+            assert_eq!(output, &canonical_outputs[0]);
+        }
+    }
+
+    /// Self-edges are supported and have a single identity per relation kind.
+    #[tokio::test]
+    async fn self_edges_are_distinct_per_relation() {
+        let mut g = empty_graph().await;
+        g.add_medical_edge(7, 7, MedicalEdgeType::RelatedTo);
+        g.add_medical_edge(7, 7, MedicalEdgeType::AssociatedWith);
+        assert_eq!(g.medical_edge_count(), 2);
+        assert_eq!(
+            g.get_edge_types(7, 7),
+            vec![MedicalEdgeType::RelatedTo, MedicalEdgeType::AssociatedWith]
+        );
+    }
+
+    /// Edge key ordering, hashing and serde agree on identity.
+    #[test]
+    fn edge_key_identity_agrees_across_traits() {
+        let forward = MedicalEdgeKey::new(1, 2, MedicalEdgeType::Treats);
+        let reverse = forward.reversed();
+        assert_ne!(forward, reverse);
+        assert_ne!(forward, MedicalEdgeKey::new(1, 2, MedicalEdgeType::Causes));
+
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(forward);
+        set.insert(reverse);
+        set.insert(MedicalEdgeKey::new(1, 2, MedicalEdgeType::Causes));
+        set.insert(forward); // exact duplicate
+        assert_eq!(set.len(), 3);
+
+        // Ord agrees with Eq: forward < reverse for equal endpoints and type
+        assert!(forward < reverse);
+    }
+
+    /// Edge key serde roundtrip is canonical and byte-stable.
+    #[test]
+    fn edge_key_serde_is_canonical() {
+        let key = MedicalEdgeKey::new(10, 20, MedicalEdgeType::Treats);
+        let json = serde_json::to_string(&key).unwrap();
+        let roundtripped: MedicalEdgeKey = serde_json::from_str(&json).unwrap();
+        assert_eq!(key, roundtripped);
+        // Field order in serialised form is fixed (canonical)
+        assert_eq!(json, r#"{"source":10,"target":20,"edge_type":"treats"}"#);
+    }
+
+    /// Legacy ambiguous data: an edge ID derived only from endpoints cannot
+    /// be re-expanded into a relation kind, so there is no lossless migration;
+    /// the graph accepts only full triple identities and re-import of legacy
+    /// sources (which carry the relation column) rebuilds the correct keys.
+    #[tokio::test]
+    async fn legacy_endpoint_only_ids_are_rejected_in_favour_of_triples() {
+        let mut g = empty_graph().await;
+        g.add_medical_edge(1, 2, MedicalEdgeType::Treats);
+        // Re-adding the same pair with a different relation kind must NOT
+        // overwrite the original (legacy collapse behaviour).
+        g.add_medical_edge(1, 2, MedicalEdgeType::Causes);
+        assert_eq!(g.medical_edge_count(), 2);
+        assert_eq!(
+            g.get_edge_types(1, 2),
+            vec![MedicalEdgeType::Treats, MedicalEdgeType::Causes]
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::magic_pair;
     use terraphim_types::Thesaurus;
 
     async fn create_test_medical_rolegraph() -> MedicalRoleGraph {
@@ -483,7 +744,6 @@ mod tests {
     #[tokio::test]
     async fn test_magic_pair_edge_encoding() {
         // Verify that magic_pair is used for edge IDs
-        let edge_id = magic_pair(100, 200);
         let mut mrg = create_test_medical_rolegraph().await;
         mrg.add_medical_node(100, "Node A".to_string(), MedicalNodeType::Concept, None);
         mrg.add_medical_node(200, "Node B".to_string(), MedicalNodeType::Concept, None);
@@ -493,8 +753,11 @@ mod tests {
             mrg.get_edge_type(100, 200),
             Some(MedicalEdgeType::RelatedTo)
         );
-        // The edge should be stored under magic_pair(100, 200)
-        assert!(mrg.edge_types.contains_key(&edge_id));
+        // The edge identity must be the canonical directed triple
+        assert!(
+            mrg.edges
+                .contains(&MedicalEdgeKey::new(100, 200, MedicalEdgeType::RelatedTo))
+        );
     }
 
     #[tokio::test]

@@ -14,36 +14,29 @@ pub enum QueryScorer {
     OkapiBM25,
     /// Tfidf is the traditional TF-IDF ranking function, which does not
     /// incorporate document length.
-    #[allow(dead_code)]
     Tfidf,
     /// Jaccard is a ranking function determined by computing the similarity
     /// of ngrams between the query and a name in the index. The similarity
     /// is computed by dividing the number of ngrams in common by the total
     /// number of distinct ngrams in both the query and the name combined.
-    #[allow(dead_code)]
     Jaccard,
     /// QueryRatio is a ranking function that represents the ratio of query
     /// terms that matched a name. It is computed by dividing the number of
     /// ngrams in common by the total number of ngrams in the query only.
-    #[allow(dead_code)]
     QueryRatio,
     /// BM25 is the Okapi BM25 ranking function, which is a probabilistic
     /// relevance function based on term frequency and inverse document frequency.
-    #[allow(dead_code)]
     BM25,
     /// BM25F is a fielded version of BM25 that applies different weights
     /// to different document fields (title, body, description, tags).
-    #[allow(dead_code)]
     BM25F,
     /// BM25Plus is an enhanced version of BM25 with additional parameters
     /// for fine-tuning the ranking algorithm.
-    #[allow(dead_code)]
     BM25Plus,
 }
 
 impl QueryScorer {
     /// Returns a list of strings representing the possible scorer values.
-    #[allow(dead_code)]
     pub fn possible_names() -> &'static [&'static str] {
         &["okapibm25", "tfidf", "jaccard", "queryratio"]
     }
@@ -81,7 +74,6 @@ impl fmt::Display for QueryScorer {
 /// For example, a 3-gram might contain up to 4 bytes, if it contains 3 Unicode
 /// codepoints that each require 4 UTF-8 code units.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[allow(dead_code)]
 pub enum NgramType {
     /// A windowing ngram.
     ///

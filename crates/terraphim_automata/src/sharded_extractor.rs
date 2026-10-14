@@ -12,7 +12,8 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 use crate::medical_artifact::{
-    ArtifactHeader, PatternMeta, artifact_exists, load_umls_artifact, save_umls_artifact,
+    ArtifactError, ArtifactHeader, ArtifactLimits, PatternMeta, artifact_exists,
+    load_umls_artifact_with_limits, save_umls_artifact,
 };
 use crate::umls::{UmlsConcept, UmlsDataset};
 use crate::umls_extractor::UmlsMatch;
@@ -168,7 +169,7 @@ impl ShardedUmlsExtractor {
     /// The artifact contains the serialized daachorse shard bytes plus concept
     /// metadata, compressed with zstd. Load time from artifact is <100ms vs
     /// ~842s build time from raw TSV.
-    pub fn save_to_artifact(&self, path: &std::path::Path) -> anyhow::Result<()> {
+    pub fn save_to_artifact(&self, path: &std::path::Path) -> Result<(), ArtifactError> {
         // Serialize each daachorse shard to raw bytes
         let shard_bytes: Vec<Vec<u8>> = self.shards.iter().map(|s| s.serialize()).collect();
 
@@ -205,30 +206,46 @@ impl ShardedUmlsExtractor {
 
     /// Load a pre-built extractor from a compressed artifact file
     ///
-    /// This is the fast path: loads in <100ms instead of rebuilding from TSV.
-    pub fn load_from_artifact(path: &std::path::Path) -> anyhow::Result<Self> {
-        let (header, shard_bytes) = load_umls_artifact(path)?;
+    /// This is the fast path: loads in milliseconds instead of rebuilding
+    /// from TSV.
+    pub fn load_from_artifact(path: &std::path::Path) -> Result<Self, ArtifactError> {
+        Self::load_from_artifact_with_limits(path, &ArtifactLimits::default())
+    }
 
-        // Reconstruct daachorse shards from raw bytes using unsafe deserialization.
-        // Safety: bytes were produced by serialize() in save_to_artifact() on the same machine.
-        let shards: Vec<DoubleArrayAhoCorasick<u32>> = shard_bytes
-            .iter()
-            .map(|bytes| {
-                // SAFETY: bytes have passed two independent gates inside
-                // `load_umls_artifact()` before reaching this point:
-                // 1. Permission enforcement — the artifact file is owner-writable
-                //    exclusively (world/group write bits rejected).  An attacker
-                //    who cannot write the file cannot forge its contents.
-                // 2. SHA-256 checksum verification — every shard's decompressed
-                //    bytes match the digest stored in the header.  Together with
-                //    gate (1), this guarantees the bytes are bit-for-bit
-                //    identical to what `serialize()` wrote; tampered or
-                //    externally-sourced bytes cannot reach this call.
-                let (automaton, _remaining) =
-                    unsafe { DoubleArrayAhoCorasick::<u32>::deserialize_unchecked(bytes) };
-                automaton
-            })
-            .collect();
+    /// Load a pre-built extractor under explicit resource budgets.
+    ///
+    /// Trust model: artefact bytes are untrusted regardless of checksum
+    /// validity. The serialized daachorse shard payload is treated as opaque
+    /// data and is never passed to unchecked deserialisation; instead each
+    /// automaton is rebuilt through the normal constructor from the validated
+    /// pattern metadata in the header, so a checksum-valid malicious payload
+    /// cannot reach `deserialize_unchecked`.
+    pub fn load_from_artifact_with_limits(
+        path: &std::path::Path,
+        limits: &ArtifactLimits,
+    ) -> Result<Self, ArtifactError> {
+        let (header, _shard_bytes) = load_umls_artifact_with_limits(path, limits)?;
+        Self::from_validated_header(header)
+    }
+
+    /// Rebuild the extractor from a fully validated header.
+    ///
+    /// Every shard automaton is compiled from its sorted, unique pattern
+    /// list via `DoubleArrayAhoCorasick::new`, the same constructor used for
+    /// first-time builds. The opaque shard bytes are discarded: they have
+    /// served their purpose (integrity evidence) and are never deserialised.
+    fn from_validated_header(header: ArtifactHeader) -> Result<Self, ArtifactError> {
+        let mut shards = Vec::with_capacity(header.shard_metadata.len());
+        for (shard_idx, metadata) in header.shard_metadata.iter().enumerate() {
+            let patterns: Vec<&str> = metadata.iter().map(|m| m.term.as_str()).collect();
+            let automaton = DoubleArrayAhoCorasick::<u32>::new(patterns).map_err(|e| {
+                ArtifactError::AutomatonBuild {
+                    shard: shard_idx,
+                    detail: format!("{:?}", e),
+                }
+            })?;
+            shards.push(automaton);
+        }
 
         // Convert public PatternMeta back to internal PatternMetadata
         let shard_metadata: Vec<Vec<PatternMetadata>> = header
@@ -533,8 +550,8 @@ mod tests {
         // then recompress so the checksum no longer matches.
         let compressed = std::fs::read(&artifact_path).unwrap();
         let mut raw = zstd::decode_all(&compressed[..]).unwrap();
-        let header_len = u64::from_le_bytes(raw[..8].try_into().unwrap()) as usize;
-        let shard_start = 8 + header_len;
+        let header_len = u64::from_le_bytes(raw[6..14].try_into().unwrap()) as usize;
+        let shard_start = 14 + header_len;
         assert!(
             shard_start < raw.len(),
             "Artifact too small to contain a shard byte"

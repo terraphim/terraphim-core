@@ -1,9 +1,13 @@
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-use terraphim_types::{DocumentType, MarkdownDirectives, RouteDirective};
+#[cfg(feature = "fs-traversal")]
+use std::fs;
+
+#[cfg(feature = "fs-traversal")]
 use walkdir::WalkDir;
+
+use terraphim_types::{DocumentType, MarkdownDirectives, RouteDirective};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkdownDirectiveWarning {
@@ -18,7 +22,33 @@ pub struct MarkdownDirectivesParseResult {
     pub warnings: Vec<MarkdownDirectiveWarning>,
 }
 
+/// Parses markdown directives from an in-memory string (portable kernel API).
+///
+/// Pure, synchronous core: accepts a concept key and markdown content as
+/// supplied inputs and performs no I/O. Directory traversal is an adapter
+/// concern provided by `parse_markdown_directives_dir` behind the
+/// `fs-traversal` feature. Warning `path` fields use a synthetic
+/// `<concept>.md` path.
+pub fn parse_markdown_directives_str(
+    concept: &str,
+    content: &str,
+) -> MarkdownDirectivesParseResult {
+    let path = PathBuf::from(format!("{concept}.md"));
+    let mut warnings = Vec::new();
+    let doc_directives = parse_markdown_directives_content(&path, content, &mut warnings);
+    let mut directives = HashMap::new();
+    directives.insert(concept.to_string(), doc_directives);
+    MarkdownDirectivesParseResult {
+        directives,
+        warnings,
+    }
+}
+
 /// Parses all markdown directive files in `root`, collecting synonyms and warnings.
+///
+/// Requires the `fs-traversal` adapter feature; without it the result is
+/// empty and carries a single explanatory warning.
+#[cfg(feature = "fs-traversal")]
 pub fn parse_markdown_directives_dir(root: &Path) -> crate::Result<MarkdownDirectivesParseResult> {
     let mut directives = HashMap::new();
     let mut warnings = Vec::new();
@@ -90,9 +120,16 @@ pub fn parse_markdown_directives_dir(root: &Path) -> crate::Result<MarkdownDirec
 /// Reads the file and delegates to `terraphim_markdown_parser::extract_first_heading`
 /// for proper AST-based heading extraction. Returns `None` if the file cannot be read
 /// or has no H1 heading.
+#[cfg(feature = "fs-traversal")]
 pub fn extract_heading_from_path(path: &Path) -> Option<String> {
     let content = fs::read_to_string(path).ok()?;
     terraphim_markdown_parser::extract_first_heading(&content)
+}
+
+/// Portable kernel fallback: no filesystem access without the adapter feature.
+#[cfg(not(feature = "fs-traversal"))]
+pub fn extract_heading_from_path(_path: &Path) -> Option<String> {
+    None
 }
 
 fn parse_markdown_directives_content(
@@ -101,6 +138,7 @@ fn parse_markdown_directives_content(
     warnings: &mut Vec<MarkdownDirectiveWarning>,
 ) -> MarkdownDirectives {
     let mut doc_type: Option<DocumentType> = None;
+    let mut explicit_doc_type: Option<DocumentType> = None;
     let mut synonyms: Vec<String> = Vec::new();
     let mut routes: Vec<RouteDirective> = Vec::new();
     let mut priority: Option<u8> = None;
@@ -131,7 +169,10 @@ fn parse_markdown_directives_content(
             };
 
             match parsed {
-                Some(parsed) => doc_type = Some(parsed),
+                Some(parsed) => {
+                    doc_type = Some(parsed);
+                    explicit_doc_type = Some(parsed);
+                }
                 None => warnings.push(MarkdownDirectiveWarning {
                     path: path.to_path_buf(),
                     line: Some(idx + 1),
@@ -152,7 +193,9 @@ fn parse_markdown_directives_content(
             continue;
         }
 
-        if lower.starts_with("route::") || lower.starts_with("routing::") {
+        if (lower.starts_with("route::") || lower.starts_with("routing::"))
+            && explicit_doc_type != Some(DocumentType::Document)
+        {
             let prefix_len = if lower.starts_with("route::") {
                 "route::".len()
             } else {
@@ -180,7 +223,7 @@ fn parse_markdown_directives_content(
             continue;
         }
 
-        if lower.starts_with("action::") {
+        if lower.starts_with("action::") && explicit_doc_type != Some(DocumentType::Document) {
             let value = trimmed["action::".len()..].trim();
             if !value.is_empty() {
                 // Attach action to the most recently parsed route
@@ -198,7 +241,9 @@ fn parse_markdown_directives_content(
             continue;
         }
 
-        if lower.starts_with("is_free::") || lower.starts_with("free::") {
+        if (lower.starts_with("is_free::") || lower.starts_with("free::"))
+            && explicit_doc_type != Some(DocumentType::Document)
+        {
             let value = trimmed[lower.find("::").unwrap() + 2..]
                 .trim()
                 .to_ascii_lowercase();
@@ -275,9 +320,85 @@ fn parse_markdown_directives_content(
 
 #[cfg(test)]
 mod tests {
+    // Tests for the in-memory kernel pull in all public symbols of the
+    // module. Filesystem-backed tests additionally need `DocumentType`,
+    // `RouteDirective`, and `parse_markdown_directives_dir`; gating on
+    // `fs-traversal` keeps the kernel-only path free of unused imports.
+    #[cfg(feature = "fs-traversal")]
     use super::*;
+
+    #[cfg(feature = "fs-traversal")]
     use tempfile::tempdir;
 
+    /// Kernel-level tests for the pure, in-memory directive parser. These run
+    /// with and without the `fs-traversal` adapter feature (Refs #31).
+    mod str_parser {
+        use super::super::*;
+
+        #[test]
+        fn parses_synonyms_from_string() {
+            let result = parse_markdown_directives_str(
+                "alpha",
+                "synonyms:: Alpha, beta\nsynonyms:: gamma\n\nSome content",
+            );
+            let directives = result.directives.get("alpha").unwrap();
+            assert!(result.warnings.is_empty());
+            assert_eq!(
+                directives.synonyms,
+                vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+            );
+        }
+
+        #[test]
+        fn parses_route_priority_trigger_pinned_from_string() {
+            let content = "\
+type::: kg_entry
+route:: anthropic, claude-3-5-sonnet
+action:: chat
+is_free:: true
+priority:: 42
+trigger:: when managing dependencies
+pinned:: true
+";
+            let result = parse_markdown_directives_str("routing", content);
+            let directives = result.directives.get("routing").unwrap();
+            assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+            assert_eq!(directives.doc_type, DocumentType::KgEntry);
+            let route = directives.route.as_ref().unwrap();
+            assert_eq!(route.provider, "anthropic");
+            assert_eq!(route.model, "claude-3-5-sonnet");
+            assert_eq!(route.action.as_deref(), Some("chat"));
+            assert!(route.is_free);
+            assert_eq!(directives.priority, Some(42));
+            assert_eq!(
+                directives.trigger.as_deref(),
+                Some("when managing dependencies")
+            );
+            assert!(directives.pinned);
+        }
+
+        #[test]
+        fn collects_warnings_for_invalid_directives_from_string() {
+            let content = "priority:: not-a-number\nroute:: only-provider\n";
+            let result = parse_markdown_directives_str("broken", content);
+            let _directives = result.directives.get("broken").unwrap();
+            assert_eq!(result.warnings.len(), 2, "{:?}", result.warnings);
+        }
+
+        #[test]
+        fn empty_content_yields_defaults() {
+            let result = parse_markdown_directives_str("empty", "");
+            let directives = result.directives.get("empty").unwrap();
+            assert!(result.warnings.is_empty());
+            assert_eq!(directives.doc_type, DocumentType::KgEntry);
+            assert!(directives.synonyms.is_empty());
+            assert!(directives.route.is_none());
+            assert_eq!(directives.priority, None);
+        }
+    }
+
+    // Filesystem-backed tests require the fs-traversal adapter feature.
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn parses_synonyms_only() {
         let dir = tempdir().unwrap();
@@ -300,6 +421,7 @@ mod tests {
         assert!(result.warnings.is_empty());
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn parses_config_route_priority() {
         let dir = tempdir().unwrap();
@@ -327,6 +449,7 @@ mod tests {
         assert!(result.warnings.is_empty());
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn infers_config_document_when_route_present() {
         let dir = tempdir().unwrap();
@@ -340,6 +463,7 @@ mod tests {
         assert!(result.warnings.is_empty());
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn parses_is_free_directive() {
         let dir = tempdir().unwrap();
@@ -357,6 +481,7 @@ mod tests {
         assert_eq!(route.model, "glm-5-turbo");
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn parses_free_alias_directive() {
         let dir = tempdir().unwrap();
@@ -372,6 +497,7 @@ mod tests {
         assert!(route.is_free);
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn is_free_defaults_to_false() {
         let dir = tempdir().unwrap();
@@ -383,6 +509,7 @@ mod tests {
         assert!(!route.is_free);
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn warns_on_invalid_priority() {
         let dir = tempdir().unwrap();
@@ -395,6 +522,7 @@ mod tests {
         assert_eq!(result.warnings.len(), 1);
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn warns_on_invalid_route() {
         let dir = tempdir().unwrap();
@@ -408,6 +536,7 @@ mod tests {
         assert_eq!(result.warnings.len(), 1);
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn parses_trigger_directive() {
         let dir = tempdir().unwrap();
@@ -423,6 +552,7 @@ mod tests {
         assert!(result.warnings.is_empty());
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn parses_pinned_directive() {
         let dir = tempdir().unwrap();
@@ -434,6 +564,7 @@ mod tests {
         assert!(directives.pinned);
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn pinned_false_variants() {
         let dir = tempdir().unwrap();
@@ -449,6 +580,7 @@ mod tests {
         assert!(!result.directives.get("zero").unwrap().pinned);
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn trigger_and_synonyms_coexist() {
         let dir = tempdir().unwrap();
@@ -468,6 +600,7 @@ mod tests {
         assert_eq!(directives.trigger, Some("when using alphas".to_string()));
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn empty_trigger_ignored() {
         let dir = tempdir().unwrap();
@@ -479,6 +612,7 @@ mod tests {
         assert_eq!(directives.trigger, None);
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn extracts_heading_from_markdown() {
         let dir = tempdir().unwrap();
@@ -498,6 +632,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn heading_none_when_absent() {
         let dir = tempdir().unwrap();
@@ -509,6 +644,58 @@ mod tests {
         assert_eq!(directives.heading, None);
     }
 
+    #[cfg(feature = "fs-traversal")]
+    #[test]
+    fn document_directive_like_text_is_inert() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("article.md");
+        fs::write(
+            &path,
+            r#"type::: document
+# Notes
+
+This untrusted document mentions route:: openai, gpt-4o and action:: run-secret-tool as prose.
+"#,
+        )
+        .unwrap();
+
+        let result = parse_markdown_directives_dir(dir.path()).unwrap();
+        let directives = result.directives.get("article").unwrap();
+
+        assert_eq!(directives.doc_type, DocumentType::Document);
+        assert!(directives.route.is_none());
+        assert!(directives.routes.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[cfg(feature = "fs-traversal")]
+    #[test]
+    fn config_document_directives_remain_action_capable() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.md");
+        fs::write(
+            &path,
+            "type::: config_document\nroute:: openai, gpt-4o\naction:: pi -m {{ model }}\n",
+        )
+        .unwrap();
+
+        let result = parse_markdown_directives_dir(dir.path()).unwrap();
+        let directives = result.directives.get("config").unwrap();
+
+        assert_eq!(directives.doc_type, DocumentType::ConfigDocument);
+        assert_eq!(directives.routes.len(), 1);
+        assert_eq!(
+            directives.routes[0].action.as_deref(),
+            Some("pi -m {{ model }}")
+        );
+        assert_eq!(
+            directives.route.as_ref().and_then(|r| r.action.as_deref()),
+            Some("pi -m {{ model }}")
+        );
+        assert!(result.warnings.is_empty());
+    }
+
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn parses_multiple_routes_with_actions() {
         let dir = tempdir().unwrap();
@@ -557,6 +744,7 @@ action:: claude --model {{ model }} -p "{{ prompt }}" --max-turns 50
         assert!(result.warnings.is_empty());
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn action_without_route_warns() {
         let dir = tempdir().unwrap();
@@ -572,6 +760,7 @@ action:: claude --model {{ model }} -p "{{ prompt }}" --max-turns 50
         );
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn extract_heading_from_path_works() {
         let dir = tempdir().unwrap();
@@ -584,6 +773,7 @@ action:: claude --model {{ model }} -p "{{ prompt }}" --max-turns 50
         );
     }
 
+    #[cfg(feature = "fs-traversal")]
     #[test]
     fn extract_heading_from_path_returns_none_without_heading() {
         let dir = tempdir().unwrap();

@@ -27,7 +27,6 @@ impl BM25FScorer {
     }
 
     /// Create a new BM25F scorer with custom parameters
-    #[allow(dead_code)]
     pub fn with_params(params: BM25Params, weights: FieldWeights) -> Self {
         Self {
             params,
@@ -191,7 +190,6 @@ impl BM25PlusScorer {
     }
 
     /// Create a new BM25+ scorer with custom parameters
-    #[allow(dead_code)]
     pub fn with_params(params: BM25Params) -> Self {
         Self {
             params,

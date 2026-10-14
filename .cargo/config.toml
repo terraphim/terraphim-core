@@ -1,5 +1,1 @@
-[registry]
-global-credential-providers = ["cargo:token"]
-
-# Terraphim private Cargo registry (Gitea, terraphim org). Public-read; publishing
-# needs CARGO_REGISTRIES_TERRAPHIM_TOKEN="Bearer $GITEA_TOKEN".
+# Public dependencies resolve from crates.io; no private registry credential is required.

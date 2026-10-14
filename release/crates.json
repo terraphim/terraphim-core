@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "repository": "terraphim/terraphim-core",
+  "owner": "AlexMikhalev",
+  "toolchain": "1.96",
+  "packages": [
+    {"name": "terraphim_types", "version": "1.22.3", "path": "crates/terraphim_types/Cargo.toml"},
+    {"name": "terraphim-markdown-parser", "version": "1.20.5", "path": "crates/terraphim-markdown-parser/Cargo.toml"},
+    {"name": "terraphim_automata", "version": "2.1.0", "path": "crates/terraphim_automata/Cargo.toml"},
+    {"name": "terraphim_rolegraph_core", "version": "0.1.1", "path": "crates/terraphim_rolegraph_core/Cargo.toml"},
+    {"name": "terraphim_rolegraph", "version": "2.0.1", "path": "crates/terraphim_rolegraph/Cargo.toml"}
+  ]
+}
