@@ -2,20 +2,23 @@
 resolver = "2"
 members = [
     "crates/terraphim_types",
-    "crates/terraphim_test_utils",
     "crates/terraphim-markdown-parser",
     "crates/terraphim_automata",
     "crates/terraphim_rolegraph",
+    "crates/terraphim_rolegraph_core",
 ]
 
+exclude = ["crates/terraphim_test_utils"]
+
 [workspace.package]
-version = "1.20.3"
+version = "1.21.0"
 edition = "2024"
 authors = ["Terraphim Team <team@terraphim.ai>"]
 documentation = "https://terraphim.ai"
 homepage = "https://terraphim.ai"
-repository = "https://git.terraphim.cloud/terraphim/terraphim-core"
+repository = "https://github.com/terraphim/terraphim-core"
 license = "Apache-2.0"
+rust-version = "1.85"
 readme = "README.md"
 
 [workspace.dependencies]
@@ -33,9 +36,6 @@ tracing = "0.1"
 tempfile = "3.27"
 rustls = { version = "0.23", default-features = false }
 rustls-webpki = "0.103.12"
-
-[patch.crates-io]
-rustls-webpki = { git = "https://github.com/rustls/webpki.git", tag = "v/0.103.12" }
 
 [profile.release]
 panic = "unwind"

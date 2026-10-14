@@ -376,16 +376,28 @@ mod tests {
             "Test desc".to_string(),
         );
 
-        let original_updated_at = procedure.updated_at.clone();
+        let original_created_at = procedure.created_at.clone();
+        let old_timestamp = "2000-01-01T00:00:00+00:00";
 
+        // Test refresh without assuming successive wall-clock reads differ.
+        procedure.updated_at = old_timestamp.to_string();
         procedure.record_success();
         assert_eq!(procedure.confidence.success_count, 1);
+        assert_eq!(procedure.confidence.failure_count, 0);
+        assert_eq!(procedure.confidence.score, 1.0);
+        assert_ne!(procedure.updated_at, old_timestamp);
+        assert!(chrono::DateTime::parse_from_rfc3339(&procedure.updated_at).is_ok());
+        assert_eq!(procedure.created_at, original_created_at);
 
+        // Reset so a successful refresh cannot hide a failure-side regression.
+        procedure.updated_at = old_timestamp.to_string();
         procedure.record_failure();
+        assert_eq!(procedure.confidence.success_count, 1);
         assert_eq!(procedure.confidence.failure_count, 1);
-
-        // updated_at should have changed
-        assert_ne!(procedure.updated_at, original_updated_at);
+        assert_eq!(procedure.confidence.score, 0.5);
+        assert_ne!(procedure.updated_at, old_timestamp);
+        assert!(chrono::DateTime::parse_from_rfc3339(&procedure.updated_at).is_ok());
+        assert_eq!(procedure.created_at, original_created_at);
     }
 
     #[test]

@@ -86,7 +86,7 @@ fn bench_find_matches(c: &mut Criterion) {
     let body = "I am a text with the word Life cycle concepts and bar and Trained operators and maintainers, project direction, some bingo words Paradigm Map and project planning, then again: some bingo words Paradigm Map and project planning, then repeats: Trained operators and maintainers, project direction";
 
     c.bench_function("find_matches", |b| {
-        b.iter(|| find_matches(body, load_sample_thesaurus(), false))
+        b.iter(|| find_matches(body, &load_sample_thesaurus(), false))
     });
 }
 

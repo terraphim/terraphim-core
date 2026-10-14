@@ -24,7 +24,6 @@ impl OkapiBM25Scorer {
     }
 
     /// Create a new Okapi BM25 scorer with custom parameters
-    #[allow(dead_code)]
     pub fn with_params(params: BM25Params) -> Self {
         Self {
             params,

@@ -72,208 +72,11 @@ pub struct GraphStats {
     pub is_populated: bool,
 }
 
-/// Simple TF-IDF index over trigger descriptions for semantic fallback search.
-/// Used when Aho-Corasick finds no exact synonym matches.
-#[derive(Debug, Clone, Default)]
-pub struct TriggerIndex {
-    /// Map from node_id to its trigger description tokens (lowercased)
-    triggers: AHashMap<u64, Vec<String>>,
-    /// Inverse document frequency for each token
-    idf: AHashMap<String, f64>,
-    /// Total number of documents with triggers
-    doc_count: usize,
-    /// Configurable relevance threshold (0.0-1.0)
-    threshold: f64,
-    /// Custom stopwords (if None, uses the default built-in set)
-    custom_stopwords: Option<ahash::AHashSet<String>>,
-}
-
-/// Default threshold for TriggerIndex relevance filtering.
-pub const DEFAULT_TRIGGER_THRESHOLD: f64 = 0.3;
-
-impl TriggerIndex {
-    /// Create a new TriggerIndex with the given threshold and default stopwords.
-    pub fn new(threshold: f64) -> Self {
-        Self {
-            triggers: AHashMap::new(),
-            idf: AHashMap::new(),
-            doc_count: 0,
-            threshold,
-            custom_stopwords: None,
-        }
-    }
-
-    /// Create a new TriggerIndex with custom stopwords.
-    ///
-    /// The custom stopwords completely replace the default set.
-    pub fn with_stopwords(threshold: f64, stopwords: ahash::AHashSet<String>) -> Self {
-        Self {
-            triggers: AHashMap::new(),
-            idf: AHashMap::new(),
-            doc_count: 0,
-            threshold,
-            custom_stopwords: Some(stopwords),
-        }
-    }
-
-    /// Set the relevance threshold (0.0-1.0).
-    pub fn set_threshold(&mut self, threshold: f64) {
-        self.threshold = threshold;
-    }
-
-    /// Get the current relevance threshold.
-    pub fn threshold(&self) -> f64 {
-        self.threshold
-    }
-
-    /// Build the index from a map of node_id -> trigger description
-    pub fn build(&mut self, triggers: AHashMap<u64, String>) {
-        self.triggers.clear();
-        self.idf.clear();
-        self.doc_count = triggers.len();
-
-        // Tokenise each trigger
-        let mut doc_freq: AHashMap<String, usize> = AHashMap::new();
-        for (node_id, trigger_text) in &triggers {
-            let tokens: Vec<String> = self.tokenise(trigger_text);
-            // Count unique tokens per document for DF
-            let unique: ahash::AHashSet<&str> = tokens.iter().map(|s| s.as_str()).collect();
-            for token in &unique {
-                *doc_freq.entry(token.to_string()).or_insert(0) += 1;
-            }
-            self.triggers.insert(*node_id, tokens);
-        }
-
-        // Compute IDF: log((N + 1) / (df + 1)) + 1 (smoothed)
-        let n = self.doc_count as f64;
-        for (token, df) in &doc_freq {
-            let idf = ((n + 1.0) / (*df as f64 + 1.0)).ln() + 1.0;
-            self.idf.insert(token.clone(), idf);
-        }
-    }
-
-    /// Query the index, returning node_ids with scores above threshold
-    pub fn query(&self, text: &str) -> Vec<(u64, f64)> {
-        if self.triggers.is_empty() {
-            return vec![];
-        }
-
-        let query_tokens = self.tokenise(text);
-        if query_tokens.is_empty() {
-            return vec![];
-        }
-
-        // Compute TF-IDF cosine similarity between query and each trigger
-        let mut results: Vec<(u64, f64)> = Vec::new();
-
-        // Query TF-IDF vector
-        let mut query_tfidf: AHashMap<&str, f64> = AHashMap::new();
-        for token in &query_tokens {
-            let tf = 1.0; // Binary TF for query
-            let idf = self.idf.get(token.as_str()).copied().unwrap_or(0.0);
-            *query_tfidf.entry(token.as_str()).or_insert(0.0) += tf * idf;
-        }
-        let query_norm: f64 = query_tfidf.values().map(|v| v * v).sum::<f64>().sqrt();
-        if query_norm == 0.0 {
-            return vec![];
-        }
-
-        for (node_id, trigger_tokens) in &self.triggers {
-            // Document TF-IDF vector
-            let mut doc_tfidf: AHashMap<&str, f64> = AHashMap::new();
-            for token in trigger_tokens {
-                let tf = 1.0; // Binary TF for short descriptions
-                let idf = self.idf.get(token.as_str()).copied().unwrap_or(0.0);
-                *doc_tfidf.entry(token.as_str()).or_insert(0.0) += tf * idf;
-            }
-            let doc_norm: f64 = doc_tfidf.values().map(|v| v * v).sum::<f64>().sqrt();
-            if doc_norm == 0.0 {
-                continue;
-            }
-
-            // Cosine similarity
-            let dot: f64 = query_tfidf
-                .iter()
-                .map(|(token, q_val)| {
-                    let d_val = doc_tfidf.get(token).copied().unwrap_or(0.0);
-                    q_val * d_val
-                })
-                .sum();
-            let similarity = dot / (query_norm * doc_norm);
-
-            if similarity >= self.threshold {
-                results.push((*node_id, similarity));
-            }
-        }
-
-        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        results
-    }
-
-    /// Simple whitespace tokeniser with lowercasing and stopword removal
-    fn tokenise(&self, text: &str) -> Vec<String> {
-        text.to_ascii_lowercase()
-            .split_whitespace()
-            .filter(|w| w.len() > 2) // Skip very short words
-            .filter(|w| !self.is_stopword(w))
-            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
-            .filter(|w| !w.is_empty())
-            .collect()
-    }
-
-    fn is_stopword(&self, word: &str) -> bool {
-        if let Some(custom) = &self.custom_stopwords {
-            return custom.contains(word);
-        }
-        Self::is_default_stopword(word)
-    }
-
-    /// The built-in default stopword list.
-    pub fn is_default_stopword(word: &str) -> bool {
-        matches!(
-            word,
-            "the"
-                | "and"
-                | "for"
-                | "are"
-                | "but"
-                | "not"
-                | "you"
-                | "all"
-                | "can"
-                | "her"
-                | "was"
-                | "one"
-                | "our"
-                | "out"
-                | "has"
-                | "have"
-                | "been"
-                | "this"
-                | "that"
-                | "with"
-                | "when"
-                | "from"
-                | "into"
-                | "which"
-                | "their"
-                | "will"
-        )
-    }
-
-    /// Returns `true` if this node has no outgoing trigger terms.
-    pub fn is_empty(&self) -> bool {
-        self.triggers.is_empty()
-    }
-
-    /// Get the original trigger descriptions (reconstruct from tokens)
-    pub fn get_trigger_descriptions(&self) -> AHashMap<u64, String> {
-        self.triggers
-            .iter()
-            .map(|(node_id, tokens)| (*node_id, tokens.join(" ")))
-            .collect()
-    }
-}
+/// TriggerIndex is canonically implemented in `terraphim_rolegraph_core`
+/// (issue terraphim-core#33). This re-export keeps the historical public path
+/// stable; both paths now share one implementation and one golden corpus
+/// (`conformance/trigger_index_golden.json`).
+pub use terraphim_rolegraph_core::{DEFAULT_TRIGGER_THRESHOLD, TriggerIndex};
 
 /// A serializable representation of RoleGraph for JSON serialization/deserialization.
 ///
@@ -728,7 +531,7 @@ impl RoleGraph {
         }
 
         let mut ranked_documents = results.into_iter().collect::<Vec<_>>();
-        ranked_documents.sort_by_key(|(_, doc)| std::cmp::Reverse(doc.rank));
+        ranked_documents.sort_by(|a, b| b.1.rank.cmp(&a.1.rank).then_with(|| a.0.cmp(&b.0)));
 
         let documents: Vec<_> = ranked_documents
             .into_iter()
@@ -828,7 +631,7 @@ impl RoleGraph {
         }
 
         let mut ranked_documents = results.into_iter().collect::<Vec<_>>();
-        ranked_documents.sort_by_key(|(_, doc)| std::cmp::Reverse(doc.rank));
+        ranked_documents.sort_by(|a, b| b.1.rank.cmp(&a.1.rank).then_with(|| a.0.cmp(&b.0)));
 
         let documents: Vec<_> = ranked_documents
             .into_iter()
@@ -939,7 +742,7 @@ impl RoleGraph {
         }
 
         let mut ranked_documents = results.into_iter().collect::<Vec<_>>();
-        ranked_documents.sort_by_key(|(_, doc)| std::cmp::Reverse(doc.rank));
+        ranked_documents.sort_by(|a, b| b.1.rank.cmp(&a.1.rank).then_with(|| a.0.cmp(&b.0)));
 
         let documents: Vec<_> = ranked_documents
             .into_iter()
@@ -1095,7 +898,7 @@ impl RoleGraph {
         }
 
         let mut ranked_documents = final_results.into_iter().collect::<Vec<_>>();
-        ranked_documents.sort_by_key(|(_, doc)| std::cmp::Reverse(doc.rank));
+        ranked_documents.sort_by(|a, b| b.1.rank.cmp(&a.1.rank).then_with(|| a.0.cmp(&b.0)));
 
         let documents: Vec<_> = ranked_documents
             .into_iter()
@@ -1111,8 +914,13 @@ impl RoleGraph {
         Ok(documents)
     }
 
-    /// Inserts an document into the rolegraph
+    /// Inserts a document into the rolegraph with replace semantics.
+    ///
+    /// Any previous contributions from `document_id` (nodes, edges and term
+    /// counts) are removed before the new content is indexed, so replaying
+    /// identical input converges on the same graph state.
     pub fn insert_document(&mut self, document_id: &str, document: Document) {
+        self.remove_document_contributions(document_id);
         self.documents.insert(
             document_id.to_string(),
             IndexedDocument::from_document(document.clone()),
@@ -1121,6 +929,58 @@ impl RoleGraph {
         for (a, b) in matches.into_iter().tuple_windows() {
             self.add_or_update_document(document_id, a, b);
         }
+    }
+
+    /// Removes a document and all of its graph contributions.
+    ///
+    /// Deleting a missing document is an idempotent no-op that returns
+    /// `false`; deleting an existing document returns `true`.
+    pub fn remove_document(&mut self, document_id: &str) -> bool {
+        let existed = self.documents.contains_key(document_id);
+        self.remove_document_contributions(document_id);
+        existed
+    }
+
+    /// Removes every stale contribution of `document_id` from edges, nodes and
+    /// the document map. Idempotent: missing documents are a no-op.
+    fn remove_document_contributions(&mut self, document_id: &str) {
+        let affected_edges: Vec<u64> = self
+            .edges
+            .iter()
+            .filter(|(_, edge)| edge.doc_hash.contains_key(document_id))
+            .map(|(edge_id, _)| *edge_id)
+            .collect();
+
+        for edge_id in affected_edges {
+            let (edge_removed, contribution) = {
+                let Some(edge) = self.edges.get_mut(&edge_id) else {
+                    continue;
+                };
+                let contribution = edge.doc_hash.remove(document_id).unwrap_or(0);
+                (edge.doc_hash.is_empty(), contribution)
+            };
+            if edge_removed {
+                self.edges.remove(&edge_id);
+            }
+            let (a, b) = magic_unpair(edge_id);
+            for endpoint in [a, b] {
+                let mut remove_node = false;
+                if let Some(node) = self.nodes.get_mut(&endpoint) {
+                    // Insertion increments both endpoints for every occurrence,
+                    // including twice for a self-edge. Undo the same contributions.
+                    node.rank = node.rank.saturating_sub(contribution);
+                    if edge_removed {
+                        node.connected_with.remove(&edge_id);
+                    }
+                    remove_node = node.rank == 0 && node.connected_with.is_empty();
+                }
+                if remove_node {
+                    self.nodes.remove(&endpoint);
+                }
+            }
+        }
+        self.documents.remove(document_id);
+        self.learning_document_ids.remove(document_id);
     }
 
     /// Check if a document is already indexed in the rolegraph
@@ -1232,7 +1092,7 @@ impl RoleGraph {
             }
             Entry::Occupied(mut entry) => {
                 let edge = entry.get_mut();
-                *edge.doc_hash.entry(document_id.to_string()).or_insert(1) += 1;
+                *edge.doc_hash.entry(document_id.to_string()).or_insert(0) += 1;
                 edge.clone()
             }
         }
@@ -1266,6 +1126,7 @@ impl RoleGraph {
     /// Index a learning document in the graph
     #[cfg(feature = "kg-integration")]
     pub fn index_learning_document(&mut self, doc: IndexedDocument) -> Result<()> {
+        self.remove_document_contributions(&doc.id);
         self.learning_document_ids.insert(doc.id.clone());
         self.documents.insert(doc.id.clone(), doc);
         Ok(())
@@ -1414,10 +1275,32 @@ pub fn magic_pair(x: u64, y: u64) -> u64 {
     if x >= y { x * x + x + y } else { y * y + x }
 }
 
+/// Pair graph coordinates without overflowing the edge identity.
+///
+/// Returns `None` if the paired value cannot be represented by a `u64`.
+/// Browser/import adapters must validate coordinates before graph mutation.
+pub fn checked_magic_pair(x: u64, y: u64) -> Option<u64> {
+    let (x, y) = (u128::from(x), u128::from(y));
+    let paired = if x >= y {
+        x.checked_mul(x)?.checked_add(x)?.checked_add(y)?
+    } else {
+        y.checked_mul(y)?.checked_add(x)?
+    };
+    u64::try_from(paired).ok()
+}
+
 /// Magic unpair - inverse of Cantor pairing
 #[inline]
 pub fn magic_unpair(z: u64) -> (u64, u64) {
-    let q = (z as f64).sqrt().floor() as u64;
+    let mut q = (z as f64).sqrt().floor() as u64;
+    // Floating-point sqrt can round up near u64::MAX. Correct the estimate
+    // with exact widened arithmetic before subtracting the square.
+    while u128::from(q) * u128::from(q) > u128::from(z) {
+        q -= 1;
+    }
+    while u128::from(q + 1) * u128::from(q + 1) <= u128::from(z) {
+        q += 1;
+    }
     let l = z - q * q;
     if l < q { (l, q) } else { (q, l - q) }
 }
@@ -1491,17 +1374,18 @@ mod tests {
     use super::*;
 
     use terraphim_automata::{AutomataPath, load_thesaurus};
-    use tokio::test;
     use ulid::Ulid;
 
     async fn load_sample_thesaurus() -> Thesaurus {
-        load_thesaurus(&AutomataPath::local_example_full())
+        let fixture =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/term_to_id.json");
+        load_thesaurus(&AutomataPath::from_local(fixture))
             .await
             .unwrap()
     }
 
     #[test]
-    async fn test_split_paragraphs() {
+    fn test_split_paragraphs() {
         let paragraph = "This is the first sentence.\n\n This is the second sentence. This is the second sentence? This is the second sentence| This is the second sentence!\n\nThis is the third sentence. Mr. John Johnson Jr. was born in the U.S.A but earned his Ph.D. in Israel before joining Nike Inc. as an engineer. He also worked at craigslist.org as a business analyst.";
         let sentences = split_paragraphs(paragraph);
         assert_eq!(sentences.len(), 9);
@@ -1522,7 +1406,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[tokio::test]
     async fn test_find_matching_node_idss() {
         let query = "I am a text with the word Life cycle concepts and bar and Trained operators and maintainers, project direction, some bingo words Paradigm Map and project planning, then again: some bingo words Paradigm Map and project planning, then repeats: Trained operators and maintainers, project direction";
         let role = "system operator".to_string();
@@ -1534,7 +1418,7 @@ mod tests {
         assert_eq!(matches.len(), 7);
     }
 
-    #[test]
+    #[tokio::test]
     async fn test_find_matching_node_idss_ac_values() {
         let query = "life cycle framework I am a text with the word Life cycle concepts and bar and Trained operators and maintainers, project direction, some bingo words Paradigm Map and project planning, then again: some bingo words Paradigm Map and project planning, then repeats: Trained operators and maintainers, project direction";
         let role = "system operator".to_string();
@@ -1554,7 +1438,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[tokio::test]
     async fn test_terraphim_engineer() {
         let role_name = "Terraphim Engineer".to_string();
         const DEFAULT_HAYSTACK_PATH: &str = "docs/src/";
@@ -1661,7 +1545,7 @@ mod tests {
         println!("Edges count {:?}", rolegraph.edges.len());
     }
 
-    #[test]
+    #[tokio::test]
     async fn test_rolegraph() {
         let role = "system operator".to_string();
         let mut rolegraph = RoleGraph::new(role.into(), load_sample_thesaurus().await)
@@ -1720,7 +1604,7 @@ mod tests {
         assert_eq!(results.len(), 4);
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
     async fn test_is_all_terms_connected_by_path_true() {
         let role = "system operator".to_string();
@@ -1731,7 +1615,7 @@ mod tests {
         assert!(rolegraph.is_all_terms_connected_by_path(text));
     }
 
-    #[test]
+    #[tokio::test]
     async fn test_is_all_terms_connected_by_path_false() {
         let role = "system operator".to_string();
         let rolegraph = RoleGraph::new(role.into(), load_sample_thesaurus().await)
@@ -2157,14 +2041,14 @@ mod tests {
 
     // TriggerIndex unit tests
     #[test]
-    async fn tfidf_empty_index_returns_empty() {
+    fn tfidf_empty_index_returns_empty() {
         let index = TriggerIndex::new(0.3);
         let results = index.query("any query");
         assert!(results.is_empty());
     }
 
     #[test]
-    async fn tfidf_exact_match_scores_high() {
+    fn tfidf_exact_match_scores_high() {
         let mut index = TriggerIndex::new(0.3);
         let mut triggers = AHashMap::new();
         triggers.insert(1u64, "managing dependencies in rust projects".to_string());
@@ -2177,7 +2061,7 @@ mod tests {
     }
 
     #[test]
-    async fn tfidf_no_match_scores_zero() {
+    fn tfidf_no_match_scores_zero() {
         let mut index = TriggerIndex::new(0.3);
         let mut triggers = AHashMap::new();
         triggers.insert(1u64, "machine learning algorithms".to_string());
@@ -2189,7 +2073,7 @@ mod tests {
     }
 
     #[test]
-    async fn tfidf_partial_match() {
+    fn tfidf_partial_match() {
         let mut index = TriggerIndex::new(0.1); // Lower threshold for partial match
         let mut triggers = AHashMap::new();
         triggers.insert(1u64, "managing dependencies cargo".to_string());
@@ -2202,7 +2086,7 @@ mod tests {
     }
 
     #[test]
-    async fn tfidf_threshold_filters() {
+    fn tfidf_threshold_filters() {
         let mut index = TriggerIndex::new(0.8); // High threshold
         let mut triggers = AHashMap::new();
         triggers.insert(
@@ -2218,7 +2102,7 @@ mod tests {
 
     // Integration tests for two-pass search
     #[test]
-    async fn two_pass_aho_corasick_first() {
+    fn two_pass_aho_corasick_first() {
         // Create a simple scenario where Aho-Corasick finds matches
         let mut index = TriggerIndex::new(0.3);
         let mut triggers = AHashMap::new();

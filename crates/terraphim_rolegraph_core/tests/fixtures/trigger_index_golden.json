@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "description": "Golden behavioural contract for TriggerIndex (canonical implementation: terraphim_rolegraph_core::TriggerIndex). Covers empty inputs, Unicode, overlapping terms, synonyms, tie scores, threshold filtering and custom stopwords. Scores are TF-IDF cosine similarities in [0, 1]; ordering is descending score with ascending node-id tie-break. Both public paths (terraphim_rolegraph and terraphim_rolegraph_core) must produce identical output for every case.",
+  "tolerance": 1e-9,
+  "cases": [
+    {
+      "name": "empty-index-returns-nothing",
+      "threshold": 0.3,
+      "docs": {},
+      "queries": [
+        { "text": "lung cancer treatment", "expect": [] }
+      ]
+    },
+    {
+      "name": "empty-query-returns-nothing",
+      "threshold": 0.3,
+      "docs": {
+        "1": "lung cancer treatment",
+        "2": "breast cancer screening"
+      },
+      "queries": [
+        { "text": "", "expect": [] },
+        { "text": "   ", "expect": [] },
+        { "text": "the and for", "expect": [] },
+        { "text": "!!! ...", "expect": [] }
+      ]
+    },
+    {
+      "name": "exact-match-scores-one",
+      "threshold": 0.1,
+      "docs": {
+        "1": "lung cancer treatment",
+        "2": "breast cancer screening"
+      },
+      "queries": [
+        { "text": "lung cancer treatment", "expect": [[1, 1.0], [2, 0.20199309249791833]] },
+        { "text": "breast cancer screening", "expect": [[2, 1.0], [1, 0.20199309249791833]] }
+      ]
+    },
+    {
+      "name": "unicode-case-folding-and-punctuation",
+      "threshold": 0.0,
+      "docs": {
+        "1": "Café MÜNCHEN protocol",
+        "2": "naïve bayes classifier"
+      },
+      "queries": [
+        { "text": "café münchen PROTOCOL", "expect": [[1, 1.0], [2, 0.0]] },
+        { "text": "naïve bayes classifier!", "expect": [[2, 1.0], [1, 0.0]] },
+        { "text": "naive-bayes: classifier", "expect": [[2, 0.816496580927726], [1, 0.0]] }
+      ]
+    },
+    {
+      "name": "overlapping-terms-ranked-by-overlap",
+      "threshold": 0.5,
+      "docs": {
+        "1": "rust async runtime",
+        "2": "rust async runtime executor scheduling",
+        "3": "python interpreter"
+      },
+      "queries": [
+        {
+          "text": "rust async runtime executor",
+          "expect_ids": [2, 1]
+        }
+      ]
+    },
+    {
+      "name": "synonym-docs-share-score-tie-broken-by-id",
+      "threshold": 0.0,
+      "docs": {
+        "30": "alpha beta",
+        "10": "alpha beta",
+        "20": "alpha beta"
+      },
+      "queries": [
+        { "text": "alpha", "expect_ids": [10, 20, 30] }
+      ]
+    },
+    {
+      "name": "threshold-filters-low-similarity",
+      "threshold": 0.5,
+      "docs": {
+        "1": "rust programming language",
+        "2": "rust"
+      },
+      "queries": [
+        { "text": "rust", "expect": [[2, 1.0]] }
+      ]
+    },
+    {
+      "name": "custom-stopwords-replace-defaults",
+      "threshold": 0.0,
+      "stopwords": ["zebra"],
+      "docs": {
+        "1": "alpha zebra gamma"
+      },
+      "queries": [
+        { "text": "alpha zebra gamma", "expect": [[1, 1.0]] },
+        { "text": "alpha gamma", "expect": [[1, 1.0]] }
+      ]
+    },
+    {
+      "name": "single-token-and-short-token-edge-cases",
+      "threshold": 0.5,
+      "docs": {
+        "1": "rust",
+        "2": "golang"
+      },
+      "queries": [
+        { "text": "go", "expect": [] },
+        { "text": "golang", "expect": [[2, 1.0]] }
+      ]
+    },
+    {
+      "name": "duplicate-words-in-doc-do-not-inflate-score",
+      "threshold": 0.0,
+      "docs": {
+        "1": "rust rust rust",
+        "2": "rust"
+      },
+      "queries": [
+        { "text": "rust", "expect_ids": [1, 2] }
+      ]
+    },
+    {
+      "name": "high-threshold-rejects-everything",
+      "threshold": 1.1,
+      "docs": {
+        "1": "anything at all"
+      },
+      "queries": [
+        { "text": "anything", "expect": [] }
+      ]
+    }
+  ]
+}

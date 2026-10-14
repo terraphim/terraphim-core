@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.22.2] - 2026-10-05
+
+### Fixed
+
+- Republished so that it, `terraphim-markdown-parser` and `terraphim_automata` all record crates.io dependencies under the same source URL. `terraphim_automata` 1.21.2 had been published with `sparse+https://index.crates.io/`, which Cargo treats as a different source from the canonical `https://github.com/rust-lang/crates.io-index` used by the other crates, so consumers built serde, ahash and getrandom twice and failed to compile (#80). No code change. (Correction: this entry first said the fix recorded the sparse URL; Cargo records the canonical URL when publishing to an alternative registry, and consistency is what fixed it.)
+
+## [1.21.0] - 2026-08-28
+
+### Changed
+
+- `Index::get_documents` no longer clones an already-owned `Document` after overlaying tags, rank, and quality score.
+
+## [1.20.4] - yanked
+
+Yanked on the Terraphim Gitea cargo registry.
+
 ## [1.0.0] - 2025-01-22
 
 ### Added

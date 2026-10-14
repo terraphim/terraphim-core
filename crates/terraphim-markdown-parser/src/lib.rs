@@ -14,12 +14,14 @@ use ulid::Ulid;
 
 pub mod chunk;
 pub mod heading;
+pub mod limits;
 
 pub use chunk::{ContentChunk, chunk_by_headings};
 pub use heading::{
     HeadingNode, HeadingTree, MatchStrategy, SectionConfig, SectionPattern, SectionType,
     build_heading_tree, classify_sections,
 };
+pub use limits::{AstStats, LimitKind, ParseLimits, ParseLimitsError, measure_ast};
 
 pub const TERRAPHIM_BLOCK_ID_PREFIX: &str = "terraphim:block-id:";
 
@@ -107,6 +109,9 @@ pub enum MarkdownParserError {
 
     #[error("missing or invalid terraphim block id for {0:?} at byte offset {1}")]
     MissingOrInvalidBlockId(BlockKind, usize),
+
+    #[error("markdown limit exceeded: {0} limit of {1} (actual: {2})")]
+    LimitExceeded(LimitKind, usize, usize),
 }
 
 impl From<markdown::message::Message> for MarkdownParserError {
@@ -174,6 +179,133 @@ pub fn normalize_markdown(markdown: &str) -> Result<NormalizedMarkdown, Markdown
         markdown: current,
         blocks,
         ast,
+    })
+}
+
+/// A recovered-parse diagnostic describing loss, a parse failure, or a limit violation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseDiagnostic {
+    /// What went wrong, as a human-readable message.
+    pub message: String,
+    /// Byte offset in the source, when known.
+    pub offset: Option<usize>,
+    /// The limit that was exceeded, when the diagnostic is a limit violation.
+    pub limit: Option<LimitKind>,
+}
+
+/// The outcome of a recovering parse: whatever output could be produced,
+/// explicit diagnostics, and whether the output is complete (loss-free).
+#[derive(Debug, Clone)]
+pub struct ParseReport {
+    /// Normalized output produced before (or without) failure. Empty when
+    /// parsing could not proceed at all.
+    pub normalized: NormalizedMarkdown,
+    /// Every recovered error or loss event encountered.
+    pub diagnostics: Vec<ParseDiagnostic>,
+    /// True only when no loss or error occurred.
+    pub complete: bool,
+}
+
+/// Enforce pre-parse limits, mapping validation errors to typed parser errors.
+fn enforce_input_limits(markdown: &str, limits: &ParseLimits) -> Result<(), MarkdownParserError> {
+    limits.validate_input(markdown).map_err(|e| match e {
+        ParseLimitsError::InputTooLarge { limit, actual } => {
+            MarkdownParserError::LimitExceeded(LimitKind::InputBytes, limit, actual)
+        }
+        ParseLimitsError::LineTooLong { limit, actual } => {
+            MarkdownParserError::LimitExceeded(LimitKind::LineLength, limit, actual)
+        }
+    })
+}
+
+/// Parse the source AST and enforce depth/node limits.
+fn parse_ast_within_limits(
+    markdown: &str,
+    limits: &ParseLimits,
+) -> Result<markdown::mdast::Node, MarkdownParserError> {
+    let ast = markdown::to_mdast(markdown, &ParseOptions::gfm())?;
+    let stats = measure_ast(&ast).ok_or(MarkdownParserError::LimitExceeded(
+        LimitKind::NodeCount,
+        limits.max_nodes,
+        usize::MAX,
+    ))?;
+    if stats.depth > limits.max_depth {
+        return Err(MarkdownParserError::LimitExceeded(
+            LimitKind::NestingDepth,
+            limits.max_depth,
+            stats.depth,
+        ));
+    }
+    if stats.nodes > limits.max_nodes {
+        return Err(MarkdownParserError::LimitExceeded(
+            LimitKind::NodeCount,
+            limits.max_nodes,
+            stats.nodes,
+        ));
+    }
+    Ok(ast)
+}
+
+/// Strict parsing: bounded, lossless, and fail-closed.
+///
+/// Returns the normalized markdown with extracted blocks, or a typed error.
+/// A successful result never hides a parse error, a resource-limit violation,
+/// or silently dropped in-scope content (block extraction is validated).
+pub fn parse_strict(
+    markdown: &str,
+    limits: &ParseLimits,
+) -> Result<NormalizedMarkdown, MarkdownParserError> {
+    enforce_input_limits(markdown, limits)?;
+    parse_ast_within_limits(markdown, limits)?;
+    let normalized = normalize_markdown(markdown)?;
+    if normalized.markdown.len() > limits.max_output_bytes {
+        return Err(MarkdownParserError::LimitExceeded(
+            LimitKind::OutputBytes,
+            limits.max_output_bytes,
+            normalized.markdown.len(),
+        ));
+    }
+    Ok(normalized)
+}
+
+/// Recovering parsing: bounded, and loss-reporting instead of fail-closed.
+///
+/// Returns whatever output could be produced together with a diagnostic for
+/// every recovered error and a [`ParseReport::complete`] flag that is false
+/// whenever any loss occurred. Never returns silently truncated output that
+/// claims to be complete.
+pub fn parse_recovering(
+    markdown: &str,
+    limits: &ParseLimits,
+) -> Result<ParseReport, MarkdownParserError> {
+    let mut diagnostics: Vec<ParseDiagnostic> = Vec::new();
+
+    let normalized = match parse_strict(markdown, limits) {
+        Ok(n) => n,
+        Err(e) => {
+            let (limit, offset) = match &e {
+                MarkdownParserError::LimitExceeded(kind, _, _) => (Some(*kind), None),
+                MarkdownParserError::MissingOrInvalidBlockId(_, offset) => (None, Some(*offset)),
+                MarkdownParserError::Markdown(_) => (None, None),
+            };
+            diagnostics.push(ParseDiagnostic {
+                message: e.to_string(),
+                offset,
+                limit,
+            });
+            NormalizedMarkdown {
+                markdown: String::new(),
+                blocks: Vec::new(),
+                ast: None,
+            }
+        }
+    };
+
+    let complete = diagnostics.is_empty();
+    Ok(ParseReport {
+        normalized,
+        diagnostics,
+        complete,
     })
 }
 

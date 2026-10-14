@@ -26,7 +26,6 @@ impl<T> SearchResults<T> {
     ///
     /// This operation is idempotent and does not change the ordering of
     /// results.
-    #[allow(dead_code)]
     pub fn normalize(&mut self) {
         if let Some(top_score) = self.0.first().map(|s| s.score()) {
             // The minimal score is 0, so if the top score is 0, then all
@@ -56,7 +55,6 @@ impl<T> SearchResults<T> {
 
     /// Trim this collection so that it contains at most the first `size`
     /// results.
-    #[allow(dead_code)]
     pub fn trim(&mut self, size: usize) {
         if self.0.len() > size {
             self.0.drain(size..);
@@ -64,19 +62,16 @@ impl<T> SearchResults<T> {
     }
 
     /// Returns the number of results in this collection.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
     /// Returns true if and only if this collection is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
     /// Return a slice of search results in order.
-    #[allow(dead_code)]
     pub fn as_slice(&self) -> &[Scored<T>] {
         &self.0
     }
@@ -120,7 +115,6 @@ impl<T> Scored<T> {
     /// most search APIs that use it will return scores in the range `[0, 1]`.
     ///
     /// The score returned is guaranteed to never be `NaN`.
-    #[allow(dead_code)]
     pub fn score(&self) -> f64 {
         self.score
     }
@@ -137,7 +131,6 @@ impl<T> Scored<T> {
     /// existing score and replaces it with the given score.
     ///
     /// This panics if the given score is `NaN`.
-    #[allow(dead_code)]
     pub fn with_score(mut self, score: f64) -> Scored<T> {
         self.set_score(score);
         self
@@ -146,7 +139,6 @@ impl<T> Scored<T> {
     /// Consume this scored value and map its value using the function given,
     /// returning a new scored value with the result of the map and an
     /// unchanged score.
-    #[allow(dead_code)]
     pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Scored<U> {
         Scored {
             score: self.score,
@@ -158,7 +150,6 @@ impl<T> Scored<T> {
     /// return a new `Scored` with an unchanged value.
     ///
     /// This panics if score returned by `f` is `NaN`.
-    #[allow(dead_code)]
     pub fn map_score<F: FnOnce(f64) -> f64>(self, f: F) -> Scored<T> {
         let score = f(self.score);
         self.with_score(score)
@@ -177,7 +168,6 @@ impl<T> Scored<T> {
 
     /// Consume this scored value and return the underlying pair of score and
     /// `T`.
-    #[allow(dead_code)]
     pub fn into_pair(self) -> (f64, T) {
         (self.score, self.value)
     }

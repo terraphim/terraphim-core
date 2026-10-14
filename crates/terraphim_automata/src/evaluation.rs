@@ -103,7 +103,7 @@ fn compute_metrics(tp: usize, fp: usize, fn_count: usize) -> ClassificationMetri
 /// then compares matched normalized term values against expected terms.
 ///
 /// Returns overall micro-averaged metrics, per-term metrics, and systematic errors.
-pub fn evaluate(ground_truth: &[GroundTruthDocument], thesaurus: Thesaurus) -> EvaluationResult {
+pub fn evaluate(ground_truth: &[GroundTruthDocument], thesaurus: &Thesaurus) -> EvaluationResult {
     let total_documents = ground_truth.len();
 
     // Accumulators for overall (micro-averaged) metrics
@@ -118,8 +118,7 @@ pub fn evaluate(ground_truth: &[GroundTruthDocument], thesaurus: Thesaurus) -> E
     let mut fp_by_term: HashMap<String, Vec<String>> = HashMap::new();
 
     for doc in ground_truth {
-        // Run find_matches with a clone of the thesaurus (find_matches takes ownership)
-        let matches = find_matches(&doc.text, thesaurus.clone(), false).unwrap_or_default();
+        let matches = find_matches(&doc.text, thesaurus, false).unwrap_or_default();
 
         // Collect the normalized term values from the matched results.
         // Use the nterm value (normalized_term.value) since that is what the
@@ -253,7 +252,7 @@ mod tests {
             ],
         }];
 
-        let result = evaluate(&ground_truth, thesaurus);
+        let result = evaluate(&ground_truth, &thesaurus);
 
         assert_eq!(result.total_documents, 1);
         assert_eq!(result.overall.true_positives, 2);
@@ -285,7 +284,7 @@ mod tests {
             ],
         }];
 
-        let result = evaluate(&ground_truth, thesaurus);
+        let result = evaluate(&ground_truth, &thesaurus);
 
         assert_eq!(result.overall.true_positives, 0);
         assert_eq!(result.overall.false_positives, 0);
@@ -315,7 +314,7 @@ mod tests {
             ],
         }];
 
-        let result = evaluate(&ground_truth, thesaurus);
+        let result = evaluate(&ground_truth, &thesaurus);
 
         assert_eq!(result.overall.true_positives, 1);
         assert_eq!(result.overall.false_positives, 0);
@@ -343,7 +342,7 @@ mod tests {
             }],
         }];
 
-        let result = evaluate(&ground_truth, thesaurus);
+        let result = evaluate(&ground_truth, &thesaurus);
 
         assert_eq!(result.overall.true_positives, 1);
         assert_eq!(result.overall.false_positives, 1);
@@ -387,7 +386,7 @@ mod tests {
             },
         ];
 
-        let result = evaluate(&ground_truth, thesaurus);
+        let result = evaluate(&ground_truth, &thesaurus);
 
         // "the" should be flagged as a systematic error (FP in all 3 docs)
         assert_eq!(result.systematic_errors.len(), 1);
@@ -402,7 +401,7 @@ mod tests {
         let thesaurus = build_test_thesaurus(&[("rust", "rust")]);
         let ground_truth: Vec<GroundTruthDocument> = vec![];
 
-        let result = evaluate(&ground_truth, thesaurus);
+        let result = evaluate(&ground_truth, &thesaurus);
 
         assert_eq!(result.total_documents, 0);
         assert_eq!(result.overall.true_positives, 0);
@@ -456,7 +455,7 @@ mod tests {
             },
         ];
 
-        let result = evaluate(&ground_truth, thesaurus);
+        let result = evaluate(&ground_truth, &thesaurus);
 
         // All terms should be found perfectly
         assert_eq!(result.overall.true_positives, 5);
@@ -564,7 +563,7 @@ mod tests {
             }],
         }];
 
-        let result = evaluate(&ground_truth, thesaurus);
+        let result = evaluate(&ground_truth, &thesaurus);
 
         assert_eq!(result.overall.true_positives, 1);
         assert_eq!(result.overall.false_positives, 0);
@@ -600,7 +599,7 @@ mod tests {
             },
         ];
 
-        let result = evaluate(&ground_truth, thesaurus);
+        let result = evaluate(&ground_truth, &thesaurus);
 
         // doc1: TP=1 (rust), FP=0, FN=0
         // doc2: TP=1 (go lang), FP=0, FN=1 (rust not in text)

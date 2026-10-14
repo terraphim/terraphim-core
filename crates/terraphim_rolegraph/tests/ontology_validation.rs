@@ -55,7 +55,6 @@ struct SimilarityPair {
     a: u64,
     b: u64,
     expected_order: String,
-    #[allow(dead_code)]
     reason: String,
 }
 

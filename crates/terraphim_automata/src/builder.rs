@@ -11,7 +11,7 @@ use tokio::io::AsyncReadExt;
 #[cfg(feature = "tokio-runtime")]
 use tokio::process::Command;
 
-use cached::proc_macro::cached;
+use memoize::memoize;
 use serde::Deserialize;
 use terraphim_types::{Concept, NormalizedTerm, NormalizedTermValue, Thesaurus};
 
@@ -31,11 +31,15 @@ pub type Result<T> = std::result::Result<T, BuilderError>;
 
 /// Compute a SHA-256 hash of all markdown files in a directory tree.
 ///
+/// Requires the `fs-traversal` adapter feature; without it this returns
+/// `Ok(None)` (no filesystem access is performed by the portable kernel).
+///
 /// Files are processed in sorted order to ensure deterministic output.
 /// The hash incorporates both the relative file path and file content,
 /// so renames and edits are both detected.
 ///
 /// Returns `Ok(None)` if the directory does not exist or contains no markdown files.
+#[cfg(feature = "fs-traversal")]
 pub fn compute_kg_source_hash(dir: &std::path::Path) -> std::io::Result<Option<String>> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
@@ -85,6 +89,13 @@ pub fn compute_kg_source_hash(dir: &std::path::Path) -> std::io::Result<Option<S
 /// A ThesaurusBuilder receives a path containing
 /// resources (e.g. files) with key-value pairs and returns a `Thesaurus`
 /// (a dictionary with synonyms which map to higher-level concepts)
+/// Portable kernel fallback for [`compute_kg_source_hash`]: performs no
+/// filesystem access and always reports "no hash".
+#[cfg(not(feature = "fs-traversal"))]
+pub fn compute_kg_source_hash(_dir: &std::path::Path) -> std::io::Result<Option<String>> {
+    Ok(None)
+}
+
 pub trait ThesaurusBuilder {
     /// Build the thesaurus from the data source
     fn build<P: Into<PathBuf> + Send>(
@@ -99,7 +110,7 @@ const LOGSEQ_SYNONYMS_KEYWORD: &str = "synonyms";
 
 #[derive(Default)]
 pub struct Logseq {
-    #[allow(dead_code)]
+    #[cfg(feature = "tokio-runtime")]
     service: LogseqService,
 }
 
@@ -140,12 +151,13 @@ impl ThesaurusBuilder for Logseq {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(feature = "tokio-runtime")]
 pub struct LogseqService {
     command: String,
     default_args: Vec<String>,
 }
 
+#[cfg(feature = "tokio-runtime")]
 impl Default for LogseqService {
     fn default() -> Self {
         Self {
@@ -181,7 +193,7 @@ impl LogseqService {
     }
 }
 
-#[cached]
+#[memoize]
 fn index_inner(name: String, messages: Vec<Message>) -> Thesaurus {
     let mut thesaurus = Thesaurus::new(name);
     let mut current_concept: Option<ConceptWithDisplay> = None;
@@ -357,10 +369,7 @@ pub enum Data {
 }
 
 fn as_path(data: &Option<Data>) -> Option<String> {
-    let data = match data {
-        Some(data) => data,
-        None => return None,
-    };
+    let data = data.as_ref()?;
     match data {
         Data::Text { text } => Some(text.clone()),
         _ => None,
@@ -393,6 +402,7 @@ pub fn json_decode(jsonlines: &str) -> Result<Vec<Message>> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "fs-traversal")]
 mod hash_tests {
     use crate::builder::compute_kg_source_hash;
     use std::io::Write;

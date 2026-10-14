@@ -73,7 +73,7 @@
 //! let text = "I love rust!";
 //!
 //! // Replace matches with Markdown links
-//! let linked = replace_matches(text, thesaurus, LinkType::MarkdownLinks).unwrap();
+//! let linked = replace_matches(text, &thesaurus, LinkType::MarkdownLinks).unwrap();
 //! let result = String::from_utf8(linked).unwrap();
 //! println!("{}", result); // "I love [rust](https://rust-lang.org)!"
 //! ```
@@ -108,10 +108,21 @@
 pub use self::builder::{Logseq, ThesaurusBuilder, compute_kg_source_hash};
 pub mod autocomplete;
 pub mod builder;
+pub mod compiled;
+pub mod concept_index;
 pub mod evaluation;
 pub mod markdown_directives;
 pub mod matcher;
+pub mod persisted;
+#[cfg(feature = "remote-loading")]
+pub mod remote;
 pub mod url_protector;
+
+#[cfg(feature = "remote-loading")]
+pub use remote::{
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_MAX_REDIRECTS, DEFAULT_MAX_RESPONSE_BYTES,
+    DEFAULT_TOTAL_TIMEOUT, RemoteFetchPolicy, fetch_bytes, fetch_text, validate_redirect,
+};
 
 pub use evaluation::{
     ClassificationMetrics, EvaluationResult, ExpectedMatch, GroundTruthDocument, SystematicError,
@@ -137,8 +148,14 @@ pub use autocomplete::{
     autocomplete_search, build_autocomplete_index, deserialize_autocomplete_index,
     fuzzy_autocomplete_search, fuzzy_autocomplete_search_levenshtein, serialize_autocomplete_index,
 };
+pub use compiled::{
+    CompiledMatcher, MatchOverlap, MatcherBuilder, MatcherOptions, PositionedMatch,
+};
+pub use concept_index::{Alternatives, ConceptIndex, alternatives_at, alternatives_in};
+#[cfg(feature = "fs-traversal")]
+pub use markdown_directives::parse_markdown_directives_dir;
 pub use markdown_directives::{
-    MarkdownDirectiveWarning, MarkdownDirectivesParseResult, parse_markdown_directives_dir,
+    MarkdownDirectiveWarning, MarkdownDirectivesParseResult, parse_markdown_directives_str,
 };
 pub use matcher::{
     LinkType, Matched, compute_concepts_matched, extract_paragraphs_from_automata, find_matches,
@@ -215,6 +232,67 @@ pub enum TerraphimAutomataError {
     /// Finite state transducer (FST) error
     #[error("FST error: {0}")]
     Fst(#[from] fst::Error),
+
+    /// Remote response returned a non-success HTTP status; the error body is
+    /// never surfaced for parsing.
+    #[error("Remote request to {url} failed with HTTP status {status}")]
+    HttpStatus { url: String, status: u16 },
+
+    /// URL scheme not permitted by the remote fetch policy.
+    #[error("URL scheme {scheme:?} is not permitted by the remote fetch policy: {url}")]
+    SchemeNotAllowed { url: String, scheme: String },
+
+    /// Redirect downgraded from HTTPS to plain HTTP.
+    #[error("Insecure redirect from HTTPS to HTTP: {from} -> {to}")]
+    InsecureRedirect { from: String, to: String },
+
+    /// Redirect count exceeded the configured maximum.
+    #[error("Too many redirects fetching {url} (max {max})")]
+    TooManyRedirects { url: String, max: usize },
+
+    /// Malformed or missing redirect destination.
+    #[error("Invalid redirect from {url}: {reason}")]
+    InvalidRedirect { url: String, reason: String },
+
+    /// Response body exceeded the configured size limit.
+    #[error("Remote response body exceeded the configured limit of {limit} bytes")]
+    BodyTooLarge { limit: u64 },
+
+    /// Transport-level HTTP failure (connection, deadline, streaming).
+    #[error("{0}")]
+    HttpTransport(String),
+
+    /// A pattern rejected during compiled-matcher construction.
+    #[error("Invalid pattern {pattern:?}: {reason}")]
+    InvalidPattern { pattern: String, reason: String },
+
+    /// A duplicate pattern supplied to a compiled-matcher builder.
+    #[error("Duplicate pattern: {0:?}")]
+    DuplicatePattern(String),
+
+    /// A persisted envelope with an unrecognised format identifier.
+    #[error("Unsupported persisted format {found:?}: expected {expected:?}")]
+    UnsupportedFormat { found: String, expected: String },
+
+    /// A persisted envelope whose format version is newer (or otherwise
+    /// unsupported) than the versions this reader knows.
+    #[error(
+        "Unsupported persisted format version {found:?} for {format_id}: supported versions are {supported:?}"
+    )]
+    UnsupportedVersion {
+        format_id: String,
+        found: Option<String>,
+        supported: Vec<u32>,
+    },
+
+    /// A persisted envelope that could not be parsed as the declared format.
+    #[error("Malformed persisted {format_id} data: {reason}")]
+    MalformedPersisted { format_id: String, reason: String },
+
+    /// Persisted construction configuration is incompatible with the payload
+    /// (for example, options that would reject the stored patterns).
+    #[error("Persisted configuration mismatch for {format_id}: {reason}")]
+    ConfigurationMismatch { format_id: String, reason: String },
 }
 
 /// Result type alias using `TerraphimAutomataError`.
@@ -275,40 +353,17 @@ impl AutomataPath {
 
     /// Local example for testing
     pub fn local_example() -> Self {
-        log::debug!("Current folder {:?}", std::env::current_dir());
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let simple_path = if cwd.ends_with("terraphim_automata")
-            || cwd.ends_with("terraphim_kg_orchestration")
-            || cwd.ends_with("terraphim_task_decomposition")
-            || cwd.ends_with("terraphim_kg_agents")
-            || cwd.ends_with("terraphim_agent_registry")
-        {
-            "../../test-fixtures/term_to_id_simple.json"
-        } else if cwd.file_name().is_some_and(|name| name == "terraphim-ai") {
-            "test-fixtures/term_to_id_simple.json"
-        } else {
-            "data/term_to_id_simple.json" // fallback to old path
-        };
-        AutomataPath::from_local(simple_path)
+        AutomataPath::from_local(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/term_to_id_simple.json"
+        ))
     }
     /// Full Local example for testing
     pub fn local_example_full() -> Self {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-
-        // Try multiple possible paths for the test fixtures
-        let possible_paths = [
-            "test-fixtures/term_to_id.json",       // from workspace root
-            "../../test-fixtures/term_to_id.json", // from crate dir
-            "../test-fixtures/term_to_id.json",    // from crates/ dir
-            "data/term_to_id.json",                // legacy fallback
-        ];
-
-        let full_path = possible_paths
-            .iter()
-            .find(|path| cwd.join(path).exists())
-            .unwrap_or(&"test-fixtures/term_to_id.json");
-
-        AutomataPath::from_local(full_path)
+        AutomataPath::from_local(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/term_to_id.json"
+        ))
     }
 
     /// Create a sample remote AutomataPath for testing
@@ -331,7 +386,7 @@ pub fn load_thesaurus_from_json_and_replace(
     link_type: LinkType,
 ) -> Result<Vec<u8>> {
     let thesaurus = load_thesaurus_from_json(json_str)?;
-    let replaced = replace_matches(content, thesaurus, link_type)?;
+    let replaced = replace_matches(content, &thesaurus, link_type)?;
     Ok(replaced)
 }
 
@@ -363,10 +418,7 @@ fn parse_thesaurus_json(contents: &str) -> Result<Thesaurus> {
     }
 
     #[derive(Deserialize)]
-    #[allow(dead_code)]
     struct LegacyTerm {
-        #[allow(dead_code)]
-        id: u64,
         nterm: String,
         #[serde(default)]
         display_value: Option<String>,
@@ -428,34 +480,8 @@ fn parse_thesaurus_json(contents: &str) -> Result<Thesaurus> {
 pub async fn load_thesaurus(automata_path: &AutomataPath) -> Result<Thesaurus> {
     async fn read_url(url: String) -> Result<String> {
         log::debug!("Reading thesaurus from remote: {url}");
-        let response = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .user_agent("Terraphim-Automata/1.0")
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
-            .get(url.clone())
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| {
-                TerraphimAutomataError::InvalidThesaurus(format!(
-                    "Failed to fetch thesaurus from remote {url}. Error: {e:#?}",
-                ))
-            })?;
-
-        let status = response.status();
-        let headers = response.headers().clone();
-        let body = response.text().await;
-
-        match body {
-            Ok(text) => Ok(text),
-            Err(e) => {
-                let error_info = format!(
-                    "Failed to read thesaurus from remote {url}. Status: {status}. Headers: {headers:#?}. Error: {e:#?}",
-                );
-                Err(TerraphimAutomataError::InvalidThesaurus(error_info))
-            }
-        }
+        let policy = RemoteFetchPolicy::default();
+        fetch_text(&url, &[], &policy).await
     }
 
     let contents = match automata_path {
