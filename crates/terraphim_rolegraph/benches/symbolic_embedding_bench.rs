@@ -150,7 +150,7 @@ fn bench_all_embeddings(c: &mut Criterion) {
     c.bench_function("all_embeddings_iteration", |b| {
         b.iter(|| {
             let count: usize = index.all_embeddings().count();
-            criterion::black_box(count);
+            std::hint::black_box(count);
         })
     });
 }
@@ -170,7 +170,7 @@ fn bench_cache_operations(c: &mut Criterion) {
     c.bench_function("cache_stats", |b| {
         b.iter(|| {
             let (cache_size, total) = index.cache_stats();
-            criterion::black_box((cache_size, total));
+            std::hint::black_box((cache_size, total));
         })
     });
 
